@@ -42,12 +42,26 @@ def score_upper_arm(angle):
 # --- FIREWALL BYPASS (METERED.CA) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
+    """Forces connection using specific App Name and a fallback list."""
+    api_key = st.secrets["METERED_API_KEY"]
+    app_name = "rashidi" # <--- REPLACE WITH YOUR METERED APP NAME
+    
     try:
-        api_key = st.secrets["METERED_API_KEY"]
-        url = f"https://openrelay.metered.ca/api/v1/turn/credentials?apiKey={api_key}"
-        return requests.get(url, timeout=5).json()
+        # 1. Try the specific App Name URL first (more reliable)
+        url = f"https://{app_name}.metered.live/api/v1/turn/credentials?apiKey={api_key}"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return response.json()
     except:
-        return [{"urls": ["stun:stun.l.google.com:19302"]}]
+        pass
+
+    # 2. EMERGENCY FALLBACK: Hardcode free STUNs if the API fails
+    # This prevents the NoneType error by ensuring the list is never empty
+    return [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]}
+    ]
 
 # --- VIDEO PROCESSOR ---
 mp_pose = mp.solutions.pose
@@ -140,3 +154,4 @@ if st.button("📸 Generate Audit Report"):
             pdf.cell(200, 10, f"Final Risk Score: {data['total']}", ln=True)
             st.download_button("📥 Download PDF", pdf.output(dest='S').encode('latin-1'), f"Audit_{op_id}.pdf")
         os.unlink(tmp.name)
+
