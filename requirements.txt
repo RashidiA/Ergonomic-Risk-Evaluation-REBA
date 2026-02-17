@@ -6,4 +6,3 @@ fpdf
 numpy
 Pillow
 av
-
