@@ -6,5 +6,4 @@ fpdf
 numpy
 Pillow
 av
-twilio
-
+requests
