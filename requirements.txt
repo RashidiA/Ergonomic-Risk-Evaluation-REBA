@@ -1,6 +1,6 @@
 streamlit
 streamlit-webrtc
-mediapipe
+mediapipe==0.10.14
 opencv-python-headless
 fpdf
 numpy
