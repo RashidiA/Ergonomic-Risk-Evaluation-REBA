@@ -1,20 +1,20 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
-import mediapipe as mp
 import cv2
 import numpy as np
+import mediapipe as mp
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
-import datetime
+import av
 import tempfile
 import os
-import av
 
-# Safety check for Mediapipe components
-try:
+# --- FORCE INITIALIZATION ---
+# This helps prevent the AttributeError by checking the module directly
+if not hasattr(mp.solutions, 'pose'):
+    st.error("System Error: Mediapipe Pose module not found. Please ensure packages.txt contains libgl1.")
+else:
     mp_pose = mp.solutions.pose
     mp_drawing = mp.solutions.drawing_utils
-except AttributeError:
-    st.error("Mediapipe failed to load. Please check your packages.txt and requirements.txt.")
 
 class REBAProcessor(VideoProcessorBase):
     def __init__(self):
@@ -23,52 +23,41 @@ class REBAProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
+        # AI Processing
         results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         
         if results.pose_landmarks:
-            mp_drawing.draw_landmarks(
-                img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2)
-            )
-            self.latest_frame = img 
+            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            self.latest_frame = img # Save for PDF
             
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-def get_angle(p1, p2, p3):
-    a, b, c = np.array(p1), np.array(p2), np.array(p3)
-    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
-    angle = np.abs(radians*180.0/np.pi)
-    return 360-angle if angle > 180.0 else angle
-
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="Trim & Final Ergo Auditor", layout="wide")
+st.set_page_config(page_title="Trim and Final Ergo Auditor")
 st.title("🛡️ Live REBA Auditor")
 
-st.sidebar.header("Audit Details")
+# Metadata sidebar
 op_id = st.sidebar.text_input("Operator ID", "OP-001")
 station = st.sidebar.text_input("Station", "Assembly")
 
-# Live Stream
+# Live Feed
 ctx = webrtc_streamer(key="reba", video_processor_factory=REBAProcessor)
 
 if st.button("📸 Capture & Generate PDF Report"):
     if ctx.video_processor and ctx.video_processor.latest_frame is not None:
         img = ctx.video_processor.latest_frame
-        st.success("Snapshot captured!")
+        st.success("Analysis Captured!")
         
-        # Simple PDF Export
+        # Simple PDF logic
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(200, 10, f"REBA Audit Report: {station}", ln=True, align='C')
+        pdf.cell(200, 10, f"REBA Audit: {station}", ln=True, align='C')
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             cv2.imwrite(tmp.name, img)
             pdf.image(tmp.name, x=40, y=40, w=130)
-            
             pdf_bytes = pdf.output(dest='S').encode('latin-1')
             st.download_button("📥 Download Report", pdf_bytes, f"REBA_{op_id}.pdf")
         os.unlink(tmp.name)
     else:
-        st.warning("Start camera and ensure a person is in the frame first.")
+        st.warning("Please start the camera and ensure someone is in view.")
