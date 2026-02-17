@@ -1,7 +1,8 @@
 streamlit
-opencv-python-headless
+streamlit-webrtc
 mediapipe
+opencv-python-headless
+fpdf
 numpy
 Pillow
-fpdf
-streamlit-webrtc
+PyAV
