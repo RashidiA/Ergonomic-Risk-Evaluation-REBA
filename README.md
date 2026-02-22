@@ -66,3 +66,7 @@ This is an open-source project created for non-commercial ergonomic safety. Cont
 Disclaimer: This tool is for educational and preliminary audit purposes. It should not replace professional medical or ergonomic advice.
 
 Ergonomics and AI: Automating the REBA assessment
+
+📖 Citation
+Mohd Rashidi Asari. (2026). RashidiA/Ergonomic-Risk-Evaluation-REBA: Initial public release (v1.0.0). Zenodo. 
+https://doi.org/10.5281/zenodo.18707034
