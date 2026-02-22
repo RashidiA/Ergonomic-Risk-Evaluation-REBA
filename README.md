@@ -51,6 +51,7 @@ Add the following:
 Ini, TOML
 
 METERED_API_KEY = "your_pk_key_here"
+
 📖 How to Use
 Positioning: Stand 2-3 meters away from the camera, showing your profile (side view).
 
@@ -68,5 +69,6 @@ Disclaimer: This tool is for educational and preliminary audit purposes. It shou
 Ergonomics and AI: Automating the REBA assessment
 
 📖 Citation
+
 Mohd Rashidi Asari. (2026). RashidiA/Ergonomic-Risk-Evaluation-REBA: Initial public release (v1.0.0). Zenodo. 
 https://doi.org/10.5281/zenodo.18707034
