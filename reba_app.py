@@ -90,6 +90,7 @@ class REBAProcessor(VideoProcessorBase):
         self.log_trunk = []
         self.log_neck = []
         self.log_arm = []
+        self.detected_zones = [] # Store height zones dynamically detected from pose landmarks
         self.recording_start_time = None
         self.total_duration_sec = 0.0
 
@@ -98,6 +99,7 @@ class REBAProcessor(VideoProcessorBase):
         self.log_trunk.clear()
         self.log_neck.clear()
         self.log_arm.clear()
+        self.detected_zones.clear()
         self.recording_start_time = time.time()
 
     def stop_analysis(self):
@@ -115,20 +117,21 @@ class REBAProcessor(VideoProcessorBase):
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             
-            # Trunk Angle (Shoulder-Hip-Knee)
+            # Key Landmarks
             shld = [lm[11].x * w, lm[11].y * h]
             hip = [lm[23].x * w, lm[23].y * h]
             knee = [lm[25].x * w, lm[25].y * h]
+            elbw = [lm[13].x * w, lm[13].y * h]
+            wrist = [lm[15].x * w, lm[15].y * h]
+            nose = [lm[0].x * w, lm[0].y * h]
+
+            # REBA Angles
             t_angle = calculate_angle(shld, hip, knee)
             t_score = score_trunk(t_angle)
             
-            # Arm Angle (Hip-Shoulder-Elbow)
-            elbw = [lm[13].x * w, lm[13].y * h]
             a_angle = calculate_angle(hip, shld, elbw)
             a_score = score_upper_arm(a_angle)
             
-            # Neck Angle (Nose-Shoulder-Hip)
-            nose = [lm[0].x * w, lm[0].y * h]
             n_angle = calculate_angle(nose, shld, hip)
             n_score = score_neck(n_angle)
             
@@ -137,14 +140,33 @@ class REBAProcessor(VideoProcessorBase):
             self.results_data = {
                 "trunk": t_score, "neck": n_score, "arm": a_score, "total": total_score
             }
+
+            # Simple pose-based Zone Estimation for Lifting
+            # Classifies wrist position relative to body landmarks
+            wrist_y = wrist[1]
+            shld_y = shld[1]
+            hip_y = hip[1]
+            knee_y = knee[1]
+
+            if wrist_y < shld_y:
+                zone = "Above Shoulder (Close)"
+            elif wrist_y < (shld_y + hip_y) / 2:
+                zone = "Shoulder to Elbow (Close)"
+            elif wrist_y < hip_y:
+                zone = "Elbow to Knuckle (Close)"
+            elif wrist_y < knee_y:
+                zone = "Knuckle to Mid-Leg (Close)"
+            else:
+                zone = "Below Mid-Leg (Close)"
             
-            # Accumulate frames during active recording
+            # Log frames during active recording
             if self.is_recording:
                 self.log_trunk.append(t_score)
                 self.log_neck.append(n_score)
                 self.log_arm.append(a_score)
+                self.detected_zones.append(zone)
 
-            # AR Visual Overlays
+            # AR Overlays
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             
             status_txt = "REC" if self.is_recording else "AR LIVE"
@@ -158,8 +180,8 @@ class REBAProcessor(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- PDF REPORT GENERATOR (2-PAGE LAYOUT) ---
-def generate_pdf_report(op_id, duration, gender, zone, actual_weight, max_weight, 
-                        trunk_stats, neck_stats, arm_stats, frame_img):
+def generate_pdf_report(op_id, duration, gender, actual_weight, 
+                        trunk_stats, neck_stats, arm_stats, detected_zone, max_weight, frame_img):
     pdf = FPDF()
     
     # ==========================================
@@ -233,7 +255,7 @@ def generate_pdf_report(op_id, duration, gender, zone, actual_weight, max_weight
     pdf.ln(4)
     
     pdf.set_font("Arial", size=11)
-    pdf.cell(190, 8, f"Selected Lifting Zone: {zone}", border='B', ln=True)
+    pdf.cell(190, 8, f"Automatically Evaluated Zone: {detected_zone}", border='B', ln=True)
     pdf.cell(190, 8, f"Actual Weight Lifted: {actual_weight:.1f} kg", border='B', ln=True)
     pdf.cell(190, 8, f"Max Recommended Limit (Fig 3.1): {max_weight:.1f} kg", border='B', ln=True)
     
@@ -295,20 +317,7 @@ with st.sidebar:
     st.markdown("---")
     st.header("🏋️ Manual Lifting Settings")
     gender = st.selectbox("Operator Gender", ["Male", "Female"])
-    
-    selected_zone = st.selectbox(
-        "Lifting Heights & Reach Zone",
-        list(WEIGHT_LIMITS[gender].keys())
-    )
-    
     actual_weight = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=100.0, value=5.0, step=0.5)
-    max_rec_weight = WEIGHT_LIMITS[gender][selected_zone]
-    
-    st.info(f"Recommended Limit for Zone: **{max_rec_weight} kg**")
-    if actual_weight > max_rec_weight:
-        st.error("⚠️ Exceeds Recommended Limit!")
-    else:
-        st.success("✅ Within Safe Ergonomic Limit")
 
 # Live Stream Streamer
 ctx = webrtc_streamer(
@@ -356,16 +365,24 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
         n_stats = compute_percentage_breakdown(proc.log_neck)
         a_stats = compute_percentage_breakdown(proc.log_arm)
         
+        # Determine dominant/worst detected lifting zone from recorded frames
+        if proc.detected_zones:
+            detected_zone = Counter(proc.detected_zones).most_common(1)[0][0]
+        else:
+            detected_zone = "Elbow to Knuckle (Close)"
+            
+        max_rec_weight = WEIGHT_LIMITS[gender].get(detected_zone, 10.0)
+
         pdf_bytes = generate_pdf_report(
             op_id=op_id,
             duration=proc.total_duration_sec,
             gender=gender,
-            zone=selected_zone,
             actual_weight=actual_weight,
-            max_weight=max_rec_weight,
             trunk_stats=t_stats,
             neck_stats=n_stats,
             arm_stats=a_stats,
+            detected_zone=detected_zone,
+            max_weight=max_rec_weight,
             frame_img=proc.latest_frame
         )
         
