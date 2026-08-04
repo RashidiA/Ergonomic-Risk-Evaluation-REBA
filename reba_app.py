@@ -11,9 +11,22 @@ from collections import Counter
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 from fpdf import FPDF
 
+# --- INITIALIZE SESSION STATE ---
+if "log_trunk" not in st.session_state:
+    st.session_state.log_trunk = []
+if "log_neck" not in st.session_state:
+    st.session_state.log_neck = []
+if "log_arm" not in st.session_state:
+    st.session_state.log_arm = []
+if "detected_zones" not in st.session_state:
+    st.session_state.detected_zones = []
+if "latest_frame" not in st.session_state:
+    st.session_state.latest_frame = None
+if "recording_duration" not in st.session_state:
+    st.session_state.recording_duration = 0.0
+
 # --- HELPER: ANGLE CALCULATION ---
 def calculate_angle(a, b, c):
-    """Calculates the angle at point 'b' given points 'a' and 'c'."""
     a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians * 180.0 / np.pi)
@@ -37,7 +50,7 @@ def score_upper_arm(angle):
     if angle <= 90: return 3
     return 4
 
-# --- ERGONOMIC WEIGHT LIFTING LIMITS (FROM FIGURE 3.1) ---
+# --- ERGONOMIC WEIGHT LIFTING LIMITS ---
 WEIGHT_LIMITS = {
     "Male": {
         "Above Shoulder (Far)": 5.0, "Above Shoulder (Close)": 10.0,
@@ -55,7 +68,7 @@ WEIGHT_LIMITS = {
     }
 }
 
-# --- FIREWALL BYPASS (METERED.CA) ---
+# --- FIREWALL BYPASS ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
     api_key = st.secrets.get("METERED_API_KEY", "")
@@ -69,8 +82,7 @@ def get_ice_servers():
         pass
     return [
         {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]}
+        {"urls": ["stun:stun1.l.google.com:19302"]}
     ]
 
 # --- VIDEO PROCESSOR ---
@@ -82,17 +94,13 @@ class REBAProcessor(VideoProcessorBase):
         self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
         self.latest_frame = None
         self.is_recording = False
-        
-        # Real-time score metrics
         self.results_data = {"trunk": 1, "neck": 1, "arm": 1, "total": 3}
         
-        # Duration logs for analysis
         self.log_trunk = []
         self.log_neck = []
         self.log_arm = []
-        self.detected_zones = [] # Store height zones dynamically detected from pose landmarks
-        self.recording_start_time = None
-        self.total_duration_sec = 0.0
+        self.detected_zones = []
+        self.start_time = None
 
     def start_analysis(self):
         self.is_recording = True
@@ -100,12 +108,10 @@ class REBAProcessor(VideoProcessorBase):
         self.log_neck.clear()
         self.log_arm.clear()
         self.detected_zones.clear()
-        self.recording_start_time = time.time()
+        self.start_time = time.time()
 
     def stop_analysis(self):
         self.is_recording = False
-        if self.recording_start_time:
-            self.total_duration_sec = time.time() - self.recording_start_time
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -117,7 +123,6 @@ class REBAProcessor(VideoProcessorBase):
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             
-            # Key Landmarks
             shld = [lm[11].x * w, lm[11].y * h]
             hip = [lm[23].x * w, lm[23].y * h]
             knee = [lm[25].x * w, lm[25].y * h]
@@ -125,53 +130,37 @@ class REBAProcessor(VideoProcessorBase):
             wrist = [lm[15].x * w, lm[15].y * h]
             nose = [lm[0].x * w, lm[0].y * h]
 
-            # REBA Angles
-            t_angle = calculate_angle(shld, hip, knee)
-            t_score = score_trunk(t_angle)
-            
-            a_angle = calculate_angle(hip, shld, elbw)
-            a_score = score_upper_arm(a_angle)
-            
-            n_angle = calculate_angle(nose, shld, hip)
-            n_score = score_neck(n_angle)
-            
+            t_score = score_trunk(calculate_angle(shld, hip, knee))
+            a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
+            n_score = score_neck(calculate_angle(nose, shld, hip))
             total_score = t_score + n_score + a_score
 
             self.results_data = {
                 "trunk": t_score, "neck": n_score, "arm": a_score, "total": total_score
             }
 
-            # Simple pose-based Zone Estimation for Lifting
-            # Classifies wrist position relative to body landmarks
+            # Pose-based lifting zone detection
             wrist_y = wrist[1]
-            shld_y = shld[1]
-            hip_y = hip[1]
-            knee_y = knee[1]
-
-            if wrist_y < shld_y:
+            if wrist_y < shld[1]:
                 zone = "Above Shoulder (Close)"
-            elif wrist_y < (shld_y + hip_y) / 2:
+            elif wrist_y < (shld[1] + hip[1]) / 2:
                 zone = "Shoulder to Elbow (Close)"
-            elif wrist_y < hip_y:
+            elif wrist_y < hip[1]:
                 zone = "Elbow to Knuckle (Close)"
-            elif wrist_y < knee_y:
+            elif wrist_y < knee[1]:
                 zone = "Knuckle to Mid-Leg (Close)"
             else:
                 zone = "Below Mid-Leg (Close)"
             
-            # Log frames during active recording
             if self.is_recording:
                 self.log_trunk.append(t_score)
                 self.log_neck.append(n_score)
                 self.log_arm.append(a_score)
                 self.detected_zones.append(zone)
 
-            # AR Overlays
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            
             status_txt = "REC" if self.is_recording else "AR LIVE"
             color = (0, 0, 255) if self.is_recording else (0, 255, 0)
-            
             cv2.putText(img, f"STATUS: {status_txt} | REBA SCORE: {total_score}", (10, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
@@ -179,24 +168,19 @@ class REBAProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- PDF REPORT GENERATOR (2-PAGE LAYOUT) ---
+# --- PDF REPORT GENERATOR ---
 def generate_pdf_report(op_id, duration, gender, actual_weight, 
                         trunk_stats, neck_stats, arm_stats, detected_zone, max_weight, frame_img):
     pdf = FPDF()
     
-    # ==========================================
-    # PAGE 1: REBA POSTURE DURATION ANALYSIS
-    # ==========================================
+    # PAGE 1
     pdf.add_page()
-    
-    # Header
     pdf.set_font("Arial", 'B', 18)
     pdf.cell(190, 10, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10)
     pdf.cell(190, 6, f"Operator: {op_id} | Total Duration: {duration:.1f} sec", ln=True, align='C')
     pdf.ln(5)
     
-    # Live AR Captured Frame
     if frame_img is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             cv2.imwrite(tmp.name, frame_img)
@@ -204,7 +188,6 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
             os.unlink(tmp.name)
         pdf.ln(95)
 
-    # Posture Duration Analysis Section
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(190, 8, "Posture Duration Analysis Breakdown", ln=True)
     pdf.set_font("Arial", size=10)
@@ -212,19 +195,11 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
     
     headers = ["Body Part", "Score 1-2 (%)", "Score 3-4 (%)", "Score 5+ (%)"]
     w_col = [45, 45, 45, 45]
-    
-    # Table Header
     for i, h in enumerate(headers):
         pdf.cell(w_col[i], 8, h, border=1, align='C')
     pdf.ln()
 
-    # Table Body
-    body_data = [
-        ("Trunk", trunk_stats),
-        ("Neck", neck_stats),
-        ("Upper Arm", arm_stats)
-    ]
-
+    body_data = [("Trunk", trunk_stats), ("Neck", neck_stats), ("Upper Arm", arm_stats)]
     for label, stats in body_data:
         pdf.cell(w_col[0], 8, label, border=1)
         pdf.cell(w_col[1], 8, f"{stats.get('low', 0):.1f}%", border=1, align='C')
@@ -232,24 +207,18 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
         pdf.cell(w_col[3], 8, f"{stats.get('high', 0):.1f}%", border=1, align='C')
         pdf.ln()
 
-    # Footer note on Page 1
     pdf.ln(10)
     pdf.set_font("Arial", 'I', 9)
     pdf.cell(190, 6, "Page 1 of 2 — Posture Risk Evaluation", align='C')
 
-    # ==========================================
-    # PAGE 2: WEIGHT LIFTING ANALYSIS
-    # ==========================================
+    # PAGE 2
     pdf.add_page()
-    
-    # Header
     pdf.set_font("Arial", 'B', 18)
     pdf.cell(190, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10)
     pdf.cell(190, 6, f"Operator: {op_id} | Evaluation Profile: {gender}", ln=True, align='C')
     pdf.ln(10)
     
-    # Summary Box
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(190, 8, "Manual Material Handling Evaluation", ln=True)
     pdf.ln(4)
@@ -257,14 +226,11 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
     pdf.set_font("Arial", size=11)
     pdf.cell(190, 8, f"Automatically Evaluated Zone: {detected_zone}", border='B', ln=True)
     pdf.cell(190, 8, f"Actual Weight Lifted: {actual_weight:.1f} kg", border='B', ln=True)
-    pdf.cell(190, 8, f"Max Recommended Limit (Fig 3.1): {max_weight:.1f} kg", border='B', ln=True)
-    
+    pdf.cell(190, 8, f"Max Recommended Limit: {max_weight:.1f} kg", border='B', ln=True)
     pdf.ln(8)
     
-    # Risk Determination Result
     is_exceeded = actual_weight > max_weight
     pdf.set_font("Arial", 'B', 14)
-    
     if is_exceeded:
         pdf.set_text_color(200, 0, 0)
         pdf.cell(190, 12, f"SAFETY STATUS: EXCEEDED RECOMMENDED LIMIT (+{(actual_weight - max_weight):.1f} kg)", border=1, align='C', ln=True)
@@ -275,51 +241,43 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
     pdf.set_text_color(0, 0, 0)
     pdf.ln(15)
 
-    # Recommendations Text
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(190, 8, "Ergonomic Recommendations:", ln=True)
     pdf.set_font("Arial", size=10)
-    
     if is_exceeded:
-        pdf.multi_cell(190, 6, "1. Reduce the load weight or utilize mechanical lifting assistance (e.g., hoist, vacuum lifter).\n2. Reposition target storage height closer to elbow/knuckle level to increase allowable weight threshold.\n3. Implement job rotation or dual-operator lifting protocols.")
+        pdf.multi_cell(190, 6, "1. Reduce load weight or utilize mechanical lifting assistance (e.g., hoist, vacuum lifter).\n2. Reposition storage height closer to elbow/knuckle level to increase threshold.\n3. Implement job rotation or dual-operator lifting protocols.")
     else:
-        pdf.multi_cell(190, 6, "1. Load weight remains safe for standard operator execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
+        pdf.multi_cell(190, 6, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
 
-    # Footer note on Page 2
     pdf.ln(40)
     pdf.set_font("Arial", 'I', 9)
     pdf.cell(190, 6, "Page 2 of 2 — Weight Limits Based on Recommended Ergonomic Standards", align='C')
 
     return pdf.output(dest='S').encode('latin-1')
 
-# --- COMPUTATION UTILITY ---
 def compute_percentage_breakdown(log_list):
     if not log_list:
         return {"low": 0.0, "mid": 0.0, "high": 0.0}
-    
     total = len(log_list)
     counts = Counter(log_list)
-    
-    low = sum(counts[s] for s in [1, 2]) / total * 100.0
-    mid = sum(counts[s] for s in [3, 4]) / total * 100.0
-    high = sum(counts[s] for s in counts if s >= 5) / total * 100.0
-    
-    return {"low": low, "mid": mid, "high": high}
+    return {
+        "low": sum(counts[s] for s in [1, 2]) / total * 100.0,
+        "mid": sum(counts[s] for s in [3, 4]) / total * 100.0,
+        "high": sum(counts[s] for s in counts if s >= 5) / total * 100.0
+    }
 
-# --- STREAMLIT UI ---
+# --- UI SETUP ---
 st.set_page_config(page_title="REBA & Lifting Ergonomic Auditor", layout="wide")
 st.title("🛡️ REBA & Weight Lifting Ergonomic Auditor")
 
 with st.sidebar:
     st.header("📋 Session Parameters")
     op_id = st.text_input("Operator ID", "OP-001")
-    
     st.markdown("---")
     st.header("🏋️ Manual Lifting Settings")
     gender = st.selectbox("Operator Gender", ["Male", "Female"])
     actual_weight = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=100.0, value=5.0, step=0.5)
 
-# Live Stream Streamer
 ctx = webrtc_streamer(
     key="reba-ai",
     mode=WebRtcMode.SENDRECV,
@@ -328,22 +286,30 @@ ctx = webrtc_streamer(
     media_stream_constraints={"video": True, "audio": False}
 )
 
-# Start / Stop Control Buttons
 col_ctrl1, col_ctrl2 = st.columns(2)
 
 with col_ctrl1:
     if st.button("▶️ Start Analysis Recording"):
         if ctx.video_processor:
             ctx.video_processor.start_analysis()
-            st.success("Recording started. Move to perform posture task.")
+            st.success("Recording started...")
 
 with col_ctrl2:
     if st.button("⏹️ Stop & Process Results"):
         if ctx.video_processor:
             ctx.video_processor.stop_analysis()
-            st.warning("Recording stopped. Session data logged for PDF report generation.")
+            
+            # Save processor state directly into Streamlit Session State
+            st.session_state.log_trunk = list(ctx.video_processor.log_trunk)
+            st.session_state.log_neck = list(ctx.video_processor.log_neck)
+            st.session_state.log_arm = list(ctx.video_processor.log_arm)
+            st.session_state.detected_zones = list(ctx.video_processor.detected_zones)
+            st.session_state.latest_frame = ctx.video_processor.latest_frame
+            if ctx.video_processor.start_time:
+                st.session_state.recording_duration = time.time() - ctx.video_processor.start_time
+            
+            st.warning("Recording stopped. Data saved to session!")
 
-# Live Display Metrics
 if ctx.video_processor:
     data = ctx.video_processor.results_data
     c1, c2, c3, c4 = st.columns(4)
@@ -353,21 +319,17 @@ if ctx.video_processor:
     c4.metric("Total REBA Risk", data['total'])
 
 st.markdown("---")
-
-# Audit Report Generator Section
 st.header("📄 Audit PDF Generation")
 
 if st.button("📸 Generate 2-Page PDF Audit Report"):
-    if ctx.video_processor and len(ctx.video_processor.log_trunk) > 0:
-        proc = ctx.video_processor
+    # Read from persistent session_state instead of processor directly
+    if len(st.session_state.log_trunk) > 0:
+        t_stats = compute_percentage_breakdown(st.session_state.log_trunk)
+        n_stats = compute_percentage_breakdown(st.session_state.log_neck)
+        a_stats = compute_percentage_breakdown(st.session_state.log_arm)
         
-        t_stats = compute_percentage_breakdown(proc.log_trunk)
-        n_stats = compute_percentage_breakdown(proc.log_neck)
-        a_stats = compute_percentage_breakdown(proc.log_arm)
-        
-        # Determine dominant/worst detected lifting zone from recorded frames
-        if proc.detected_zones:
-            detected_zone = Counter(proc.detected_zones).most_common(1)[0][0]
+        if st.session_state.detected_zones:
+            detected_zone = Counter(st.session_state.detected_zones).most_common(1)[0][0]
         else:
             detected_zone = "Elbow to Knuckle (Close)"
             
@@ -375,7 +337,7 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
 
         pdf_bytes = generate_pdf_report(
             op_id=op_id,
-            duration=proc.total_duration_sec,
+            duration=st.session_state.recording_duration,
             gender=gender,
             actual_weight=actual_weight,
             trunk_stats=t_stats,
@@ -383,7 +345,7 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
             arm_stats=a_stats,
             detected_zone=detected_zone,
             max_weight=max_rec_weight,
-            frame_img=proc.latest_frame
+            frame_img=st.session_state.latest_frame
         )
         
         st.download_button(
@@ -393,4 +355,4 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
             mime="application/pdf"
         )
     else:
-        st.error("No logged session found. Please click 'Start Analysis Recording' and let it run before generating the PDF.")
+        st.error("No logged session found. Please click 'Start Analysis Recording', run it for a few seconds, then click 'Stop & Process Results' before generating the PDF.")
