@@ -5,18 +5,26 @@ import mediapipe as mp
 import av
 import tempfile
 import os
+import time
 import requests
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
 
-# --- GLOBAL PERSISTENT MEMORY (Survives WebRTC STOP & Streamlit Reruns) ---
+# --- GLOBAL PERSISTENT MEMORY ---
 @st.cache_resource
 def get_global_store():
     return {
         "frame": None,
+        "total_duration": 0.0,
+        "overall_score": 3,
+        "breakdown": {
+            "Trunk": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
+            "Neck": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
+            "Upper Arm": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0}
+        },
         "results": {
-            "trunk": 1, "neck": 1, "arm": 1, "total": 3,
-            "auto_zone": "Elbow to Knuckle", "auto_reach": "Close"
+            "auto_zone": "Elbow to Knuckle",
+            "auto_reach": "Close"
         }
     }
 
@@ -24,7 +32,6 @@ GLOBAL_STORE = get_global_store()
 
 # --- HELPER: ANGLE CALCULATION ---
 def calculate_angle(a, b, c):
-    """Calculates the angle at point 'b' given points 'a' and 'c'."""
     a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians * 180.0 / np.pi)
@@ -66,10 +73,17 @@ LIFTING_MATRIX = {
     }
 }
 
+REBA_ACTION_TABLE = [
+    ("1", "None", "Not necessary"),
+    ("2-3", "Low", "May be necessary"),
+    ("4-7", "Medium", "Necessary"),
+    ("8-10", "High", "Necessary and soon"),
+    ("11-15", "Very high", "Necessary urgent")
+]
+
 # --- FIREWALL BYPASS (METERED.CA) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
-    """Forces connection using specific App Name and fallback free STUNs."""
     try:
         api_key = st.secrets["METERED_API_KEY"]
         app_name = "rashidi"
@@ -86,87 +100,145 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- 2-PAGE PDF GENERATOR (FPDF2 COMPATIBLE) ---
-def generate_2page_pdf(operator_id, profile, actual_weight, data, img_frame):
+# --- PDF GENERATOR MATCHING SPECIFIED LAYOUT ---
+def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf = FPDF()
     
-    # --- PAGE 1: REBA POSTURE AUDIT ---
+    # ==================== PAGE 1 ====================
     pdf.add_page()
+    
+    # Title
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, f"REBA POSTURE AUDIT: {operator_id}", ln=True, align='C')
-    pdf.ln(5)
-
-    if img_frame is None:
-        img_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        cv2.putText(img_frame, "Audit Snapshot Captured", (120, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        cv2.imwrite(tmp.name, img_frame)
-        pdf.image(tmp.name, x=35, y=30, w=140)
-        tmp_path = tmp.name
-
-    pdf.ln(100)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 8, "Posture Sub-Scores & Risk Evaluation", ln=True)
-    pdf.set_font("Arial", size=10)
-    pdf.cell(0, 6, f"Trunk Score: {data.get('trunk', 1)}", ln=True)
-    pdf.cell(0, 6, f"Neck Score: {data.get('neck', 1)}", ln=True)
-    pdf.cell(0, 6, f"Arm Score: {data.get('arm', 1)}", ln=True)
+    pdf.cell(0, 10, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
+    pdf.ln(3)
+    
+    # Operator Info Subheader
+    pdf.set_font("Arial", 'B', 10)
+    dur = store_data.get("total_duration", 0.0)
+    pdf.cell(0, 6, f"Operator: {operator_id} | Total Duration: {dur:.1f} sec", ln=True, align='C')
+    
+    score = store_data.get("overall_score", 3)
     pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, f"Total REBA Score: {data.get('total', 3)}", ln=True)
-
+    pdf.cell(0, 8, f"Evaluated Overall REBA Score: {score}", ln=True, align='C')
+    pdf.ln(4)
+    
+    # Table 1: Posture Duration Analysis Breakdown
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, "Posture Duration Analysis Breakdown", ln=True)
+    
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(50, 7, "Body Part", border=1, align='C')
+    pdf.cell(45, 7, "Score 1-2 (%)", border=1, align='C')
+    pdf.cell(45, 7, "Score 3-4 (%)", border=1, align='C')
+    pdf.cell(45, 7, "Score 5+ (%)", border=1, align='C', ln=True)
+    
+    pdf.set_font("Arial", size=9)
+    breakdown = store_data.get("breakdown", {})
+    for part in ["Trunk", "Neck", "Upper Arm"]:
+        stats = breakdown.get(part, {"1-2": 100.0, "3-4": 0.0, "5+": 0.0})
+        pdf.cell(50, 7, part, border=1)
+        pdf.cell(45, 7, f"{stats['1-2']:.1f}%", border=1, align='C')
+        pdf.cell(45, 7, f"{stats['3-4']:.1f}%", border=1, align='C')
+        pdf.cell(45, 7, f"{stats['5+']:.1f}%", border=1, align='C', ln=True)
+        
+    pdf.ln(6)
+    
+    # Table 2: REBA Standard Action & Risk Table
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, "REBA Standard Action & Risk Table", ln=True)
+    
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(40, 7, "REBA Score", border=1, align='C')
+    pdf.cell(60, 7, "Risk level", border=1, align='C')
+    pdf.cell(85, 7, "Action", border=1, align='C', ln=True)
+    
+    pdf.set_font("Arial", size=9)
+    for r_score, r_level, r_action in REBA_ACTION_TABLE:
+        is_current = (r_score == "2-3" if score in [2,3] else r_score == str(score))
+        prefix = "-> " if is_current else ""
+        pdf.cell(40, 7, f"{prefix}{r_score}", border=1, align='C')
+        pdf.cell(60, 7, r_level, border=1)
+        pdf.cell(85, 7, r_action, border=1, ln=True)
+        
     pdf.set_y(-15)
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 1 of 2 - REBA Posture Risk Evaluation", align='L')
 
-    # --- PAGE 2: MANUAL WEIGHT LIFTING AUDIT ---
+    # ==================== PAGE 2 ====================
     pdf.add_page()
+    
+    # Title
     pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True)
-    pdf.set_font("Arial", size=10)
-    pdf.cell(0, 6, f"Operator ID: {operator_id} | Profile: {profile}", ln=True)
+    pdf.cell(0, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, f"Operator: {operator_id} | Evaluation Profile: {profile}", ln=True, align='C')
     pdf.ln(4)
-
-    auto_zone = data.get("auto_zone", "Elbow to Knuckle")
-    auto_reach = data.get("auto_reach", "Close")
+    
+    # MMH Summary
+    res_data = store_data.get("results", {})
+    auto_zone = res_data.get("auto_zone", "Elbow to Knuckle")
+    auto_reach = res_data.get("auto_reach", "Close")
     max_limit = LIFTING_MATRIX[profile][auto_zone][auto_reach]
-    status = "WITHIN SAFE ERGONOMIC LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE ERGONOMIC LIMIT"
-
+    status_str = "WITHIN SAFE ERGONOMIC LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE ERGONOMIC LIMIT"
+    
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(0, 8, "Manual Material Handling Evaluation Summary", ln=True)
     pdf.set_font("Arial", size=10)
-    pdf.cell(0, 6, f"Auto-Detected Zone: {auto_zone} ({auto_reach})", ln=True)
+    pdf.cell(0, 6, f"Automatically Evaluated Zone: {auto_zone} ({auto_reach})", ln=True)
     pdf.cell(0, 6, f"Actual Weight Lifted: {actual_weight:.1f} kg", ln=True)
-    pdf.cell(0, 6, f"Recommended Max Limit: {max_limit:.1f} kg", ln=True)
+    pdf.cell(0, 6, f"Max Recommended Limit: {max_limit:.1f} kg", ln=True)
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 8, f"STATUS: {status}", ln=True)
-    pdf.ln(6)
-
+    pdf.cell(0, 8, f"SAFETY STATUS: {status_str}", ln=True)
+    pdf.ln(4)
+    
+    # Table 3: Recommended Weight Matrix Reference
     pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, f"Recommended Weight Matrix Standard ({profile})", ln=True)
+    pdf.cell(0, 8, f"Recommended Weight Matrix Reference ({profile})", ln=True)
+    
     pdf.set_font("Arial", 'B', 9)
-    pdf.cell(60, 7, "Height Zone", border=1)
-    pdf.cell(60, 7, "Close Reach Limit (kg)", border=1)
-    pdf.cell(60, 7, "Far Reach Limit (kg)", border=1, ln=True)
-
+    pdf.cell(65, 7, "Height Zone", border=1)
+    pdf.cell(60, 7, "Close Reach Limit (kg)", border=1, align='C')
+    pdf.cell(60, 7, "Far Reach Limit (kg)", border=1, align='C', ln=True)
+    
     pdf.set_font("Arial", size=9)
     for z_name, vals in LIFTING_MATRIX[profile].items():
         prefix = "-> " if z_name == auto_zone else ""
-        pdf.cell(60, 7, f"{prefix}{z_name}", border=1)
-        pdf.cell(60, 7, f"{vals['Close']} kg", border=1)
-        pdf.cell(60, 7, f"{vals['Far']} kg", border=1, ln=True)
+        pdf.cell(65, 7, f"{prefix}{z_name}", border=1)
+        pdf.cell(60, 7, f"{vals['Close']:.1f} kg", border=1, align='C')
+        pdf.cell(60, 7, f"{vals['Far']:.1f} kg", border=1, align='C', ln=True)
+        
+    pdf.ln(4)
+    
+    # Diagram & Recommendations Section
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "Ergonomic Lifting Reference Diagram", ln=True)
+    
+    # Save captured webcam snapshot as the diagram image
+    img_frame = store_data.get("frame")
+    if img_frame is None:
+        img_frame = np.zeros((300, 400, 3), dtype=np.uint8)
+        cv2.putText(img_frame, "Ergonomic Reference", (80, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+        cv2.imwrite(tmp.name, img_frame)
+        tmp_path = tmp.name
+        pdf.image(tmp_path, x=15, y=pdf.get_y() + 2, w=80)
+
+    pdf.set_x(102)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "Ergonomic Recommendations:", ln=True)
+    pdf.set_x(102)
+    pdf.set_font("Arial", size=9)
+    pdf.multi_cell(90, 5, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
+
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
 
     pdf.set_y(-15)
     pdf.set_font("Arial", 'I', 8)
-    pdf.cell(0, 10, "Page 2 of 2 - Recommended Weight Limits Matrix", align='L')
+    pdf.cell(0, 10, "Page 2 of 2 - Recommended Weight Limits Matrix Standard", align='L')
 
-    # Convert output using FPDF2 standard syntax
-    pdf_out = bytes(pdf.output())
-    
-    if os.path.exists(tmp_path):
-        os.unlink(tmp_path)
-        
-    return pdf_out
+    return bytes(pdf.output())
 
 # --- VIDEO PROCESSOR ---
 mp_pose = mp.solutions.pose
@@ -175,8 +247,18 @@ mp_drawing = mp.solutions.drawing_utils
 class REBAProcessor(VideoProcessorBase):
     def __init__(self):
         self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.start_time = None
+        self.counts = {
+            "Trunk": {"1-2": 0, "3-4": 0, "5+": 0},
+            "Neck": {"1-2": 0, "3-4": 0, "5+": 0},
+            "Upper Arm": {"1-2": 0, "3-4": 0, "5+": 0}
+        }
+        self.total_frames = 0
 
     def recv(self, frame):
+        if self.start_time is None:
+            self.start_time = time.time()
+
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
         h, w, _ = img.shape
@@ -186,24 +268,21 @@ class REBAProcessor(VideoProcessorBase):
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             
-            # 1. TRUNK ANGLE
+            # Scores
             shld = [lm[11].x * w, lm[11].y * h]
             hip = [lm[23].x * w, lm[23].y * h]
             knee = [lm[25].x * w, lm[25].y * h]
-            t_angle = calculate_angle(shld, hip, knee)
-            t_score = score_trunk(t_angle)
+            t_score = score_trunk(calculate_angle(shld, hip, knee))
             
-            # 2. UPPER ARM ANGLE
             elbw = [lm[13].x * w, lm[13].y * h]
-            a_angle = calculate_angle(hip, shld, elbw)
-            a_score = score_upper_arm(a_angle)
+            a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
             
-            # 3. NECK ANGLE
             nose = [lm[0].x * w, lm[0].y * h]
-            n_angle = calculate_angle(nose, shld, hip)
-            n_score = score_neck(n_angle)
+            n_score = score_neck(calculate_angle(nose, shld, hip))
+            
+            total_reba = t_score + n_score + a_score
 
-            # 4. AUTO LIFTING ZONE AND REACH DETECTION
+            # Auto zone & reach
             wrst = [lm[15].x * w, lm[15].y * h]
             if wrst[1] < shld[1]:
                 detected_zone = "Above Shoulder"
@@ -218,21 +297,43 @@ class REBAProcessor(VideoProcessorBase):
 
             arm_reach_dist = abs(wrst[0] - shld[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
-            
-            res = {
-                "trunk": t_score, "neck": n_score, "arm": a_score, 
-                "total": t_score + n_score + a_score,
-                "auto_zone": detected_zone, "auto_reach": detected_reach
+
+            # Accumulate Duration Statistics
+            self.total_frames += 1
+            for name, sc in [("Trunk", t_score), ("Neck", n_score), ("Upper Arm", a_score)]:
+                if sc <= 2:
+                    self.counts[name]["1-2"] += 1
+                elif sc <= 4:
+                    self.counts[name]["3-4"] += 1
+                else:
+                    self.counts[name]["5+"] += 1
+
+            # Compute %
+            tf = max(1, self.total_frames)
+            breakdown_pct = {}
+            for name in ["Trunk", "Neck", "Upper Arm"]:
+                breakdown_pct[name] = {
+                    "1-2": (self.counts[name]["1-2"] / tf) * 100.0,
+                    "3-4": (self.counts[name]["3-4"] / tf) * 100.0,
+                    "5+": (self.counts[name]["5+"] / tf) * 100.0
+                }
+
+            elapsed_dur = time.time() - self.start_time
+
+            # Update Persistent Memory
+            GLOBAL_STORE["total_duration"] = elapsed_dur
+            GLOBAL_STORE["overall_score"] = total_reba
+            GLOBAL_STORE["breakdown"] = breakdown_pct
+            GLOBAL_STORE["results"] = {
+                "auto_zone": detected_zone,
+                "auto_reach": detected_reach
             }
-            
-            # Draw overlay
-            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            cv2.putText(img, f"REBA: {res['total']}", (10, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
-            # Continuously update persistent memory
-            GLOBAL_STORE["results"] = res
             GLOBAL_STORE["frame"] = img.copy()
+
+            # Render Visual Overlay
+            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            cv2.putText(img, f"REBA: {total_reba}", (10, 50), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -253,28 +354,25 @@ ctx = webrtc_streamer(
     media_stream_constraints={"video": True, "audio": False}
 )
 
-# Display standard metrics from memory
-data = GLOBAL_STORE["results"]
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Trunk Score", data['trunk'])
-col2.metric("Neck Score", data['neck'])
-col3.metric("Arm Score", data['arm'])
-col4.metric("Total Risk", data['total'])
+# Display Metrics
+st.markdown("### Live / Last Captured Metrics")
+m_col1, m_col2 = st.columns(2)
+m_col1.metric("Overall REBA Score", GLOBAL_STORE["overall_score"])
+m_col2.metric("Total Duration (s)", f"{GLOBAL_STORE['total_duration']:.1f}")
 
-st.caption(f"📍 Auto-Detected Lifting Zone: **{data.get('auto_zone', 'Elbow to Knuckle')} ({data.get('auto_reach', 'Close')})**")
+res_data = GLOBAL_STORE["results"]
+st.caption(f"📍 Automatically Evaluated Zone: **{res_data.get('auto_zone', 'Elbow to Knuckle')} ({res_data.get('auto_reach', 'Close')})**")
 
 st.markdown("---")
 
-# PDF Generation button uses persistent cache (Works even when camera is STOPPED)
-pdf_bytes = generate_2page_pdf(
-    op_id, profile, actual_wt, 
-    GLOBAL_STORE["results"], 
-    GLOBAL_STORE["frame"]
+# Generate exact PDF matching prompt structure
+pdf_bytes = generate_custom_pdf(
+    op_id, profile, actual_wt, GLOBAL_STORE
 )
 
 st.download_button(
-    label="📥 Download 2-Page Audit PDF Report", 
+    label="📥 Download REBA Lifting Audit PDF Report", 
     data=pdf_bytes, 
-    file_name=f"Audit_{op_id}.pdf", 
+    file_name=f"REBA_Lifting_Audit_{op_id}.pdf", 
     mime="application/pdf"
 )
