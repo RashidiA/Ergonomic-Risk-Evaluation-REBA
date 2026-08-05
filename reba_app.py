@@ -13,6 +13,7 @@ from streamlit_webrtc import (
 from fpdf import FPDF
 import mediapipe as mp
 
+# --- SAFE MEDIAPIPE INITIALIZATION ---
 try:
     mp_pose = mp.solutions.pose
     mp_drawing = mp.solutions.drawing_utils
@@ -174,55 +175,65 @@ def generate_2page_pdf(operator_id, profile, actual_weight, height_zone, reach, 
     pdf.output(buffer)
     return buffer.getvalue()
 
-# --- LIGHTWEIGHT WEBRTC PROCESSOR ---
+# --- LAZY / SAFE WEBRTC PROCESSOR ---
 class REBAProcessor(VideoProcessorBase):
     def __init__(self):
-        self.pose = mp_pose.Pose(
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-            model_complexity=0  # Fast processing to prevent freezing
-        )
+        self.pose = None
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         h, w, _ = img.shape
-        results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-        if results.pose_landmarks:
-            lm = results.pose_landmarks.landmark
-            
-            sh = [lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * w, lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * h]
-            el = [lm[mp_pose.PoseLandmark.LEFT_ELBOW.value].x * w, lm[mp_pose.PoseLandmark.LEFT_ELBOW.value].y * h]
-            wr = [lm[mp_pose.PoseLandmark.LEFT_WRIST.value].x * w, lm[mp_pose.PoseLandmark.LEFT_WRIST.value].y * h]
-            hp = [lm[mp_pose.PoseLandmark.LEFT_HIP.value].x * w, lm[mp_pose.PoseLandmark.LEFT_HIP.value].y * h]
-            kn = [lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x * w, lm[mp_pose.PoseLandmark.LEFT_KNEE.value].y * h]
-            ea = [lm[mp_pose.PoseLandmark.LEFT_EAR.value].x * w, lm[mp_pose.PoseLandmark.LEFT_EAR.value].y * h]
+        # Lazy initialization inside recv to prevent model download blocking on stream launch
+        if self.pose is None:
+            try:
+                self.pose = mp_pose.Pose(
+                    static_image_mode=False,
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5,
+                    model_complexity=0
+                )
+            except Exception:
+                return frame.from_ndarray(img, format="bgr24")
 
-            trunk_a = calculate_angle([hp[0], hp[1] - 100], hp, sh)
-            neck_a = calculate_angle(sh, ea, [ea[0], ea[1] - 100])
-            upper_a = calculate_angle(hp, sh, el)
-            lower_a = calculate_angle(sh, el, wr)
-            leg_a = calculate_angle(hp, kn, [kn[0], kn[1] + 100])
+        try:
+            results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-            t_s = 1 if trunk_a < 10 else (2 if trunk_a < 20 else 3)
-            n_s = 1 if neck_a < 20 else 2
-            l_s = 1 if leg_a < 30 else 2
-            u_s = 1 if upper_a < 20 else (2 if upper_a < 45 else 3)
-            lo_s = 1 if 60 <= lower_a <= 100 else 2
-            w_s = 1
+            if results and results.pose_landmarks:
+                lm = results.pose_landmarks.landmark
+                
+                sh = [lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * w, lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * h]
+                el = [lm[mp_pose.PoseLandmark.LEFT_ELBOW.value].x * w, lm[mp_pose.PoseLandmark.LEFT_ELBOW.value].y * h]
+                wr = [lm[mp_pose.PoseLandmark.LEFT_WRIST.value].x * w, lm[mp_pose.PoseLandmark.LEFT_WRIST.value].y * h]
+                hp = [lm[mp_pose.PoseLandmark.LEFT_HIP.value].x * w, lm[mp_pose.PoseLandmark.LEFT_HIP.value].y * h]
+                kn = [lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x * w, lm[mp_pose.PoseLandmark.LEFT_KNEE.value].y * h]
+                ea = [lm[mp_pose.PoseLandmark.LEFT_EAR.value].x * w, lm[mp_pose.PoseLandmark.LEFT_EAR.value].y * h]
 
-            reba = get_reba_score(t_s, n_s, l_s, u_s, lo_s, w_s)
+                trunk_a = calculate_angle([hp[0], hp[1] - 100], hp, sh)
+                neck_a = calculate_angle(sh, ea, [ea[0], ea[1] - 100])
+                upper_a = calculate_angle(hp, sh, el)
+                lower_a = calculate_angle(sh, el, wr)
+                leg_a = calculate_angle(hp, kn, [kn[0], kn[1] + 100])
 
-            st.session_state.result_queue.put({
-                "reba": reba, "trunk": t_s, "neck": n_s, 
-                "upper_arm": u_s, "lower_arm": lo_s, "legs": l_s
-            })
+                t_s = 1 if trunk_a < 10 else (2 if trunk_a < 20 else 3)
+                n_s = 1 if neck_a < 20 else 2
+                l_s = 1 if leg_a < 30 else 2
+                u_s = 1 if upper_a < 20 else (2 if upper_a < 45 else 3)
+                lo_s = 1 if 60 <= lower_a <= 100 else 2
+                w_s = 1
 
-            # Draw Pose Overlay
-            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            
-            # Draw Live AR REBA Text on Stream
-            cv2.putText(img, f"REBA: {reba}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+                reba = get_reba_score(t_s, n_s, l_s, u_s, lo_s, w_s)
+
+                st.session_state.result_queue.put({
+                    "reba": reba, "trunk": t_s, "neck": n_s, 
+                    "upper_arm": u_s, "lower_arm": lo_s, "legs": l_s
+                })
+
+                mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                cv2.putText(img, f"REBA: {reba}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+
+        except Exception:
+            pass
 
         return frame.from_ndarray(img, format="bgr24")
 
@@ -234,7 +245,7 @@ col1, col2 = st.columns([3, 2])
 with col1:
     st.subheader("📷 Live Assessment Stream")
     webrtc_streamer(
-        key="reba-live-stream",
+        key="reba-live-stream-v5",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIGURATION,
         video_processor_factory=REBAProcessor,
