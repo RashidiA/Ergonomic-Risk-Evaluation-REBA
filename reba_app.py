@@ -10,7 +10,7 @@ import requests
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
 
-# --- GLOBAL PERSISTENT MEMORY (Survives WebRTC STOP & Reruns) ---
+# --- GLOBAL PERSISTENT MEMORY ---
 @st.cache_resource
 def get_global_store():
     return {
@@ -100,65 +100,82 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- PDF GENERATOR MATCHING SPECIFIED LAYOUT ---
+# --- PDF GENERATOR (STRICT 2-PAGE LAYOUT + YELLOW HIGHLIGHT) ---
 def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)  # Disable auto page breaks to prevent accidental page 3
     
     # ==================== PAGE 1 ====================
     pdf.add_page()
     
-    # Title
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
-    pdf.ln(3)
-    
-    # Operator Info Subheader
+    # Title & Subheader
+    pdf.set_font("Arial", 'B', 15)
+    pdf.cell(0, 8, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
     pdf.set_font("Arial", 'B', 10)
     dur = store_data.get("total_duration", 0.0)
-    pdf.cell(0, 6, f"Operator: {operator_id} | Total Duration: {dur:.1f} sec", ln=True, align='C')
+    pdf.cell(0, 5, f"Operator: {operator_id} | Total Duration: {dur:.1f} sec", ln=True, align='C')
     
     score = store_data.get("overall_score", 3)
     pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, f"Evaluated Overall REBA Score: {score}", ln=True, align='C')
-    pdf.ln(4)
+    pdf.cell(0, 7, f"Evaluated Overall REBA Score: {score}", ln=True, align='C')
+    pdf.ln(3)
     
     # Table 1: Posture Duration Analysis Breakdown
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, "Posture Duration Analysis Breakdown", ln=True)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "Posture Duration Analysis Breakdown", ln=True)
     
     pdf.set_font("Arial", 'B', 9)
-    pdf.cell(50, 7, "Body Part", border=1, align='C')
-    pdf.cell(45, 7, "Score 1-2 (%)", border=1, align='C')
-    pdf.cell(45, 7, "Score 3-4 (%)", border=1, align='C')
-    pdf.cell(45, 7, "Score 5+ (%)", border=1, align='C', ln=True)
+    pdf.cell(50, 6, "Body Part", border=1, align='C')
+    pdf.cell(45, 6, "Score 1-2 (%)", border=1, align='C')
+    pdf.cell(45, 6, "Score 3-4 (%)", border=1, align='C')
+    pdf.cell(45, 6, "Score 5+ (%)", border=1, align='C', ln=True)
     
     pdf.set_font("Arial", size=9)
     breakdown = store_data.get("breakdown", {})
     for part in ["Trunk", "Neck", "Upper Arm"]:
         stats = breakdown.get(part, {"1-2": 100.0, "3-4": 0.0, "5+": 0.0})
-        pdf.cell(50, 7, part, border=1)
-        pdf.cell(45, 7, f"{stats['1-2']:.1f}%", border=1, align='C')
-        pdf.cell(45, 7, f"{stats['3-4']:.1f}%", border=1, align='C')
-        pdf.cell(45, 7, f"{stats['5+']:.1f}%", border=1, align='C', ln=True)
+        pdf.cell(50, 6, part, border=1)
+        pdf.cell(45, 6, f"{stats['1-2']:.1f}%", border=1, align='C')
+        pdf.cell(45, 6, f"{stats['3-4']:.1f}%", border=1, align='C')
+        pdf.cell(45, 6, f"{stats['5+']:.1f}%", border=1, align='C', ln=True)
         
-    pdf.ln(6)
+    pdf.ln(4)
     
     # Table 2: REBA Standard Action & Risk Table
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, "REBA Standard Action & Risk Table", ln=True)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "REBA Standard Action & Risk Table", ln=True)
     
     pdf.set_font("Arial", 'B', 9)
-    pdf.cell(40, 7, "REBA Score", border=1, align='C')
-    pdf.cell(60, 7, "Risk level", border=1, align='C')
-    pdf.cell(85, 7, "Action", border=1, align='C', ln=True)
+    pdf.cell(40, 6, "REBA Score", border=1, align='C')
+    pdf.cell(60, 6, "Risk level", border=1, align='C')
+    pdf.cell(85, 6, "Action", border=1, align='C', ln=True)
     
     pdf.set_font("Arial", size=9)
     for r_score, r_level, r_action in REBA_ACTION_TABLE:
-        is_current = (r_score == "2-3" if score in [2,3] else r_score == str(score))
-        prefix = "-> " if is_current else ""
-        pdf.cell(40, 7, f"{prefix}{r_score}", border=1, align='C')
-        pdf.cell(60, 7, r_level, border=1)
-        pdf.cell(85, 7, r_action, border=1, ln=True)
+        # Check if score matches current range
+        if r_score == "1":
+            is_match = (score == 1)
+        elif r_score == "2-3":
+            is_match = (score in [2, 3])
+        elif r_score == "4-7":
+            is_match = (4 <= score <= 7)
+        elif r_score == "8-10":
+            is_match = (8 <= score <= 10)
+        else:
+            is_match = (score >= 11)
+
+        prefix = "-> " if is_match else ""
+        
+        # Yellow Highlight on matching score row
+        if is_match:
+            pdf.set_fill_color(255, 255, 0)
+            fill_flag = True
+        else:
+            fill_flag = False
+
+        pdf.cell(40, 6, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
+        pdf.cell(60, 6, r_level, border=1, fill=fill_flag)
+        pdf.cell(85, 6, r_action, border=1, ln=True, fill=fill_flag)
         
     pdf.set_y(-15)
     pdf.set_font("Arial", 'I', 8)
@@ -167,12 +184,12 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     # ==================== PAGE 2 ====================
     pdf.add_page()
     
-    # Title
+    # Title & Subheader
     pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
+    pdf.cell(0, 8, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 6, f"Operator: {operator_id} | Evaluation Profile: {profile}", ln=True, align='C')
-    pdf.ln(4)
+    pdf.cell(0, 5, f"Operator: {operator_id} | Evaluation Profile: {profile}", ln=True, align='C')
+    pdf.ln(3)
     
     # MMH Summary
     res_data = store_data.get("results", {})
@@ -181,33 +198,47 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     max_limit = LIFTING_MATRIX[profile][auto_zone][auto_reach]
     status_str = "WITHIN SAFE ERGONOMIC LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE ERGONOMIC LIMIT"
     
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, "Manual Material Handling Evaluation Summary", ln=True)
-    pdf.set_font("Arial", size=10)
-    pdf.cell(0, 6, f"Automatically Evaluated Zone: {auto_zone} ({auto_reach})", ln=True)
-    pdf.cell(0, 6, f"Actual Weight Lifted: {actual_weight:.1f} kg", ln=True)
-    pdf.cell(0, 6, f"Max Recommended Limit: {max_limit:.1f} kg", ln=True)
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 8, f"SAFETY STATUS: {status_str}", ln=True)
-    pdf.ln(4)
+    pdf.cell(0, 6, "Manual Material Handling Evaluation Summary", ln=True)
+    pdf.set_font("Arial", size=9)
+    pdf.cell(0, 5, f"Automatically Evaluated Zone: {auto_zone} ({auto_reach})", ln=True)
+    pdf.cell(0, 5, f"Actual Weight Lifted: {actual_weight:.1f} kg", ln=True)
+    pdf.cell(0, 5, f"Max Recommended Limit: {max_limit:.1f} kg", ln=True)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(0, 6, f"SAFETY STATUS: {status_str}", ln=True)
+    pdf.ln(3)
     
-    # Table 3: Recommended Weight Matrix Reference
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, f"Recommended Weight Matrix Reference ({profile})", ln=True)
+    # Table 3: Recommended Weight Matrix Reference with Yellow Highlight
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, f"Recommended Weight Matrix Reference ({profile})", ln=True)
     
     pdf.set_font("Arial", 'B', 9)
-    pdf.cell(65, 7, "Height Zone", border=1)
-    pdf.cell(60, 7, "Close Reach Limit (kg)", border=1, align='C')
-    pdf.cell(60, 7, "Far Reach Limit (kg)", border=1, align='C', ln=True)
+    pdf.cell(65, 6, "Height Zone", border=1)
+    pdf.cell(60, 6, "Close Reach Limit (kg)", border=1, align='C')
+    pdf.cell(60, 6, "Far Reach Limit (kg)", border=1, align='C', ln=True)
     
     pdf.set_font("Arial", size=9)
     for z_name, vals in LIFTING_MATRIX[profile].items():
-        prefix = "-> " if z_name == auto_zone else ""
-        pdf.cell(65, 7, f"{prefix}{z_name}", border=1)
-        pdf.cell(60, 7, f"{vals['Close']:.1f} kg", border=1, align='C')
-        pdf.cell(60, 7, f"{vals['Far']:.1f} kg", border=1, align='C', ln=True)
+        is_active_zone = (z_name == auto_zone)
+        prefix = "-> " if is_active_zone else ""
         
-    pdf.ln(4)
+        pdf.cell(65, 6, f"{prefix}{z_name}", border=1)
+        
+        # Highlight Close column if active reach is Close & active zone
+        if is_active_zone and auto_reach == "Close":
+            pdf.set_fill_color(255, 255, 0)
+            pdf.cell(60, 6, f"{vals['Close']:.1f} kg", border=1, align='C', fill=True)
+        else:
+            pdf.cell(60, 6, f"{vals['Close']:.1f} kg", border=1, align='C', fill=False)
+
+        # Highlight Far column if active reach is Far & active zone
+        if is_active_zone and auto_reach == "Far":
+            pdf.set_fill_color(255, 255, 0)
+            pdf.cell(60, 6, f"{vals['Far']:.1f} kg", border=1, align='C', fill=True, ln=True)
+        else:
+            pdf.cell(60, 6, f"{vals['Far']:.1f} kg", border=1, align='C', fill=False, ln=True)
+        
+    pdf.ln(3)
     
     # Diagram & Recommendations Section
     pdf.set_font("Arial", 'B', 10)
@@ -215,23 +246,24 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     
     img_path = "assets/recommended_weight.png"
     tmp_path = None
+    y_pos = pdf.get_y() + 2
 
     if os.path.exists(img_path):
-        pdf.image(img_path, x=15, y=pdf.get_y() + 2, w=80)
+        pdf.image(img_path, x=15, y=y_pos, w=75)
     else:
-        placeholder = np.zeros((300, 400, 3), dtype=np.uint8)
-        cv2.putText(placeholder, "Image Not Found", (80, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        placeholder = np.zeros((250, 350, 3), dtype=np.uint8)
+        cv2.putText(placeholder, "Image Not Found", (60, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             cv2.imwrite(tmp.name, placeholder)
             tmp_path = tmp.name
-            pdf.image(tmp_path, x=15, y=pdf.get_y() + 2, w=80)
+            pdf.image(tmp_path, x=15, y=y_pos, w=75)
 
-    pdf.set_x(102)
+    pdf.set_xy(98, y_pos)
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "Ergonomic Recommendations:", ln=True)
-    pdf.set_x(102)
-    pdf.set_font("Arial", size=9)
-    pdf.multi_cell(90, 5, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
+    pdf.set_x(98)
+    pdf.set_font("Arial", size=8.5)
+    pdf.multi_cell(95, 4.5, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
 
     if tmp_path and os.path.exists(tmp_path):
         os.unlink(tmp_path)
@@ -367,7 +399,7 @@ st.caption(f"📍 Automatically Evaluated Zone: **{res_data.get('auto_zone', 'El
 
 st.markdown("---")
 
-# Generate exact PDF matching prompt structure
+# Generate PDF with strict page bounding and yellow highlights
 pdf_bytes = generate_custom_pdf(
     op_id, profile, actual_wt, GLOBAL_STORE
 )
