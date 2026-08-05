@@ -5,7 +5,12 @@ import numpy as np
 import streamlit as st
 import queue
 from collections import Counter
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
+from streamlit_webrtc import (
+    webrtc_streamer,
+    VideoProcessorBase,
+    WebRtcMode,
+    RTCConfiguration
+)
 from fpdf import FPDF
 
 # --- SAFE MEDIAPIPE IMPORTS ---
@@ -38,10 +43,14 @@ if "log_neck" not in st.session_state:
 if "log_upper_arm" not in st.session_state:
     st.session_state.log_upper_arm = []
 
-# --- STUN CONFIGURATION (Fixes Connection/STUN Error on Cloud) ---
-RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
-)
+# --- ROBUST RTC STUN CONFIGURATION (Fixes Cloud WebRTC Timeouts) ---
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302"]},
+        {"urls": ["stun:stun4.l.google.com:19302"]}
+    ]
+})
 
 # --- HELPER FUNCTIONS ---
 def calculate_angle(a, b, c):
@@ -135,18 +144,17 @@ def calc_pct(log):
 def generate_2page_pdf(operator_id, profile, actual_weight, height_zone, reach, reba_logs, trunk_logs, neck_logs, arm_logs):
     pdf = FPDF()
     
-    # --- PAGE 1: POSTURE AUDIT ---
+    # PAGE 1: POSTURE AUDIT
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, "REBA POSTURE AUDIT REPORT", ln=True, align='L')
     pdf.set_font("Arial", size=10)
-    duration = len(reba_logs) * 0.1  # Approx sampling time
+    duration = len(reba_logs) * 0.1
     eval_reba = max(reba_logs) if reba_logs else 1
     pdf.cell(0, 8, f"Operator: {operator_id} | Total Duration: {duration:.1f} sec", ln=True)
     pdf.cell(0, 8, f"Evaluated Overall REBA Score: {eval_reba}", ln=True)
     pdf.ln(5)
 
-    # Posture Duration Analysis Breakdown
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(0, 8, "Posture Duration Analysis Breakdown", ln=True)
     pdf.set_font("Arial", 'B', 9)
@@ -189,7 +197,7 @@ def generate_2page_pdf(operator_id, profile, actual_weight, height_zone, reach, 
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 1 of 2 - REBA Posture Risk Evaluation", align='L')
 
-    # --- PAGE 2: MANUAL WEIGHT LIFTING AUDIT ---
+    # PAGE 2: MANUAL WEIGHT LIFTING AUDIT
     pdf.add_page()
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True)
@@ -210,7 +218,6 @@ def generate_2page_pdf(operator_id, profile, actual_weight, height_zone, reach, 
     pdf.cell(0, 8, f"SAFETY STATUS: {safety_status}", ln=True)
     pdf.ln(4)
 
-    # Matrix Reference
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(0, 8, f"Recommended Weight Matrix Reference ({profile})", ln=True)
     pdf.set_font("Arial", 'B', 9)
@@ -247,7 +254,11 @@ def generate_2page_pdf(operator_id, profile, actual_weight, height_zone, reach, 
 # --- WEBRTC PROCESSOR CLASS ---
 class REBAProcessor(VideoProcessorBase):
     def __init__(self):
-        self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.pose = mp_pose.Pose(
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+            model_complexity=1
+        )
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -297,11 +308,11 @@ col1, col2 = st.columns([3, 2])
 with col1:
     st.subheader("📷 Live Assessment Stream")
     webrtc_streamer(
-        key="reba-processor",
+        key="reba-processor-v2",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIGURATION,
         video_processor_factory=REBAProcessor,
-        media_stream_constraints={"video": True, "audio": False},
+        media_stream_constraints={"video": {"width": {"ideal": 640}, "height": {"ideal": 480}}, "audio": False},
         async_processing=True
     )
 
