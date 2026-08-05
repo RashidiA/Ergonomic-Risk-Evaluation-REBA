@@ -6,3 +6,4 @@ opencv-python-headless
 protobuf>=4.25.3
 numpy
 pillow
+fpdf2
