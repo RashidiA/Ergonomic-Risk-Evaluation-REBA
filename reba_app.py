@@ -373,7 +373,7 @@ class REBAProcessor(VideoProcessorBase):
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="REBA AI Auditor", layout="wide")
-st.title("🛡️ Live REBA Auditor")
+st.title("🛡️ Live AR REBA & Manual Weight Lifting Analysis")
 
 with st.sidebar:
     st.header("Settings & MMH Inputs")
