@@ -1,90 +1,42 @@
-import cv2
-import math
-import io
-import numpy as np
 import streamlit as st
-import queue
-from streamlit_webrtc import (
-    webrtc_streamer,
-    VideoProcessorBase,
-    WebRtcMode,
-    RTCConfiguration
-)
-from fpdf import FPDF
+import cv2
+import numpy as np
 import mediapipe as mp
+import av
+import tempfile
+import os
+import requests
+import io
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+from fpdf import FPDF
 
-# --- SAFE MEDIAPIPE INITIALIZATION ---
-try:
-    mp_pose = mp.solutions.pose
-    mp_drawing = mp.solutions.drawing_utils
-except AttributeError:
-    import mediapipe.python.solutions.pose as mp_pose
-    import mediapipe.python.solutions.drawing_utils as mp_drawing
-
-# --- PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="REBA Ergonomic Risk Evaluator",
-    page_icon="🦾",
-    layout="wide"
-)
-
-# Shared State & Queues
-if "result_queue" not in st.session_state:
-    st.session_state.result_queue = queue.Queue()
-
-if "log_reba" not in st.session_state:
-    st.session_state.log_reba = []
-if "log_trunk" not in st.session_state:
-    st.session_state.log_trunk = []
-if "log_neck" not in st.session_state:
-    st.session_state.log_neck = []
-if "log_upper_arm" not in st.session_state:
-    st.session_state.log_upper_arm = []
-
-# --- STANDARD STUN CONFIGURATION ---
-RTC_CONFIGURATION = RTCConfiguration({
-    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-})
-
+# --- HELPER: ANGLE CALCULATION ---
 def calculate_angle(a, b, c):
+    """Calculates the angle at point 'b' given points 'a' and 'c'."""
     a, b, c = np.array(a), np.array(b), np.array(c)
-    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
+    radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians * 180.0 / np.pi)
-    return 360.0 - angle if angle > 180.0 else angle
+    return 360 - angle if angle > 180.0 else angle
 
-# REBA LOOKUP TABLES
-TABLE_A = [
-    [[1, 2, 3, 4], [2, 3, 4, 5], [2, 4, 5, 6], [3, 4, 5, 6]],
-    [[2, 3, 4, 5], [3, 4, 5, 6], [4, 5, 6, 7], [5, 6, 7, 8]],
-    [[3, 4, 5, 6], [4, 5, 6, 7], [5, 6, 7, 8], [6, 7, 8, 9]],
-    [[4, 5, 6, 7], [5, 6, 7, 8], [6, 7, 8, 9], [7, 8, 9, 9]],
-    [[6, 7, 8, 9], [7, 8, 9, 9], [8, 9, 9, 9], [9, 9, 9, 9]]
-]
+# --- REBA SCORING ENGINE ---
+def score_trunk(angle):
+    dev = abs(180 - angle)
+    if dev <= 5: return 1
+    if dev <= 20: return 2
+    if dev <= 60: return 3
+    return 4
 
-TABLE_B = [
-    [[1, 2, 2], [1, 2, 3]],
-    [[1, 2, 3], [2, 3, 4]],
-    [[3, 4, 5], [4, 5, 6]],
-    [[4, 5, 6], [5, 6, 7]],
-    [[6, 7, 8], [7, 8, 9]],
-    [[7, 8, 9], [8, 9, 9]]
-]
+def score_neck(angle):
+    if angle <= 20: return 1
+    return 2
 
-TABLE_C = [
-    [1, 1, 1, 2, 3, 3, 4, 5, 6, 7, 7, 7],
-    [1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 7, 8],
-    [2, 3, 3, 3, 4, 5, 6, 7, 7, 8, 8, 8],
-    [3, 4, 4, 4, 5, 6, 7, 8, 8, 9, 9, 9],
-    [4, 4, 4, 5, 6, 7, 8, 8, 9, 9, 9, 9],
-    [6, 6, 6, 7, 8, 8, 9, 9, 10, 10, 10, 10],
-    [7, 7, 7, 8, 9, 9, 9, 10, 10, 11, 11, 11],
-    [8, 8, 8, 9, 10, 10, 10, 10, 10, 11, 11, 11],
-    [9, 9, 9, 10, 10, 10, 11, 11, 11, 12, 12, 12],
-    [10, 10, 10, 11, 11, 11, 11, 12, 12, 12, 12, 12],
-    [11, 11, 11, 11, 12, 12, 12, 12, 12, 12, 12, 12],
-    [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12]
-]
+def score_upper_arm(angle):
+    if angle <= 20: return 1
+    if angle <= 45: return 2
+    if angle <= 90: return 3
+    return 4
 
+# --- MANUAL WEIGHT LIFTING REFERENCE MATRIX (kg) ---
 LIFTING_MATRIX = {
     "Male": {
         "Above Shoulder": {"Close": 10.0, "Far": 5.0},
@@ -102,204 +54,203 @@ LIFTING_MATRIX = {
     }
 }
 
-def get_reba_score(trunk, neck, legs, upper_arm, lower_arm, wrist, load=0, coupling=0, activity=0):
+# --- FIREWALL BYPASS (METERED.CA) ---
+@st.cache_data(ttl=3600)
+def get_ice_servers():
+    """Forces connection using specific App Name and a fallback list."""
     try:
-        score_a = TABLE_A[trunk - 1][neck - 1][legs - 1] + load
-        score_b = TABLE_B[upper_arm - 1][lower_arm - 1][wrist - 1] + coupling
-        score_c = TABLE_C[score_a - 1][score_b - 1]
-        return min(score_c + activity, 15)
-    except IndexError:
-        return 1
+        api_key = st.secrets["METERED_API_KEY"]
+        app_name = "rashidi"
+        url = f"https://{app_name}.metered.live/api/v1/turn/credentials?apiKey={api_key}"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
 
-def get_risk_level(score):
-    if score == 1:
-        return "None", "Not necessary"
-    elif 2 <= score <= 3:
-        return "Low", "May be necessary"
-    elif 4 <= score <= 7:
-        return "Medium", "Necessary"
-    elif 8 <= score <= 10:
-        return "High", "Necessary and soon"
-    else:
-        return "Very high", "Necessary urgent"
+    return [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+        {"urls": ["stun:stun2.l.google.com:19302"]}
+    ]
 
-def calc_pct(log):
-    if not log:
-        return "0.0%", "0.0%", "0.0%"
-    total = len(log)
-    s12 = sum(1 for x in log if x in [1, 2]) / total * 100
-    s34 = sum(1 for x in log if x in [3, 4]) / total * 100
-    s5p = sum(1 for x in log if x >= 5) / total * 100
-    return f"{s12:.1f}%", f"{s34:.1f}%", f"{s5p:.1f}%"
-
-def generate_2page_pdf(operator_id, profile, actual_weight, height_zone, reach, reba_logs, trunk_logs, neck_logs, arm_logs):
+# --- 2-PAGE PDF REPORT GENERATOR ---
+def generate_2page_pdf(operator_id, profile, actual_weight, data, img_frame):
     pdf = FPDF()
+    
+    # --- PAGE 1: REBA POSTURE AUDIT ---
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "REBA POSTURE AUDIT REPORT", ln=True)
-    pdf.set_font("Arial", size=10)
-    duration = len(reba_logs) * 0.1
-    eval_reba = max(reba_logs) if reba_logs else 1
-    pdf.cell(0, 8, f"Operator: {operator_id} | Duration: {duration:.1f}s | Evaluated REBA: {eval_reba}", ln=True)
+    pdf.cell(0, 10, f"REBA POSTURE AUDIT: {operator_id}", ln=True, align='C')
     pdf.ln(5)
 
+    if img_frame is not None:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            cv2.imwrite(tmp.name, img_frame)
+            pdf.image(tmp.name, x=35, y=30, w=140)
+            os.unlink(tmp.name)
+            pdf.ln(100)
+
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, "Posture Sub-Scores & Risk Evaluation", ln=True)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(0, 6, f"Trunk Score: {data.get('trunk', 1)}", ln=True)
+    pdf.cell(0, 6, f"Neck Score: {data.get('neck', 1)}", ln=True)
+    pdf.cell(0, 6, f"Arm Score: {data.get('arm', 1)}", ln=True)
     pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 8, "Posture Duration Breakdown", ln=True)
-    pdf.set_font("Arial", 'B', 9)
-    pdf.cell(45, 7, "Body Part", border=1)
-    pdf.cell(45, 7, "Score 1-2 (%)", border=1)
-    pdf.cell(45, 7, "Score 3-4 (%)", border=1)
-    pdf.cell(45, 7, "Score 5+ (%)", border=1, ln=True)
+    pdf.cell(0, 8, f"Total REBA Score: {data.get('total', 3)}", ln=True)
 
-    pdf.set_font("Arial", size=9)
-    for b_name, b_log in [("Trunk", trunk_logs), ("Neck", neck_logs), ("Upper Arm", arm_logs)]:
-        s12, s34, s5p = calc_pct(b_log)
-        pdf.cell(45, 7, b_name, border=1)
-        pdf.cell(45, 7, s12, border=1)
-        pdf.cell(45, 7, s34, border=1)
-        pdf.cell(45, 7, s5p, border=1, ln=True)
+    pdf.set_y(-15)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.cell(0, 10, "Page 1 of 2 - REBA Posture Risk Evaluation", align='L')
 
+    # --- PAGE 2: MANUAL LIFTING AUDIT ---
     pdf.add_page()
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True)
     pdf.set_font("Arial", size=10)
-    pdf.cell(0, 6, f"Operator: {operator_id} | Profile: {profile}", ln=True)
-    
-    max_limit = LIFTING_MATRIX[profile][height_zone][reach]
-    safety_status = "WITHIN SAFE LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE LIMIT"
-    pdf.cell(0, 6, f"Evaluated Zone: {height_zone} ({reach})", ln=True)
-    pdf.cell(0, 6, f"Actual Weight: {actual_weight:.1f} kg | Limit: {max_limit:.1f} kg", ln=True)
-    pdf.cell(0, 8, f"STATUS: {safety_status}", ln=True)
+    pdf.cell(0, 6, f"Operator ID: {operator_id} | Profile: {profile}", ln=True)
+    pdf.ln(4)
 
-    buffer = io.BytesIO()
-    pdf.output(buffer)
-    return buffer.getvalue()
+    auto_zone = data.get("auto_zone", "Elbow to Knuckle")
+    auto_reach = data.get("auto_reach", "Close")
+    max_limit = LIFTING_MATRIX[profile][auto_zone][auto_reach]
+    status = "WITHIN SAFE ERGONOMIC LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE ERGONOMIC LIMIT"
 
-# --- LAZY / SAFE WEBRTC PROCESSOR ---
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, "Manual Material Handling Evaluation Summary", ln=True)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(0, 6, f"Auto-Detected Zone: {auto_zone} ({auto_reach})", ln=True)
+    pdf.cell(0, 6, f"Actual Weight Lifted: {actual_weight:.1f} kg", ln=True)
+    pdf.cell(0, 6, f"Recommended Max Limit: {max_limit:.1f} kg", ln=True)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 8, f"STATUS: {status}", ln=True)
+    pdf.ln(6)
+
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, f"Recommended Weight Matrix Standard ({profile})", ln=True)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(60, 7, "Height Zone", border=1)
+    pdf.cell(60, 7, "Close Reach Limit (kg)", border=1)
+    pdf.cell(60, 7, "Far Reach Limit (kg)", border=1, ln=True)
+
+    pdf.set_font("Arial", size=9)
+    for z_name, vals in LIFTING_MATRIX[profile].items():
+        prefix = "-> " if z_name == auto_zone else ""
+        pdf.cell(60, 7, f"{prefix}{z_name}", border=1)
+        pdf.cell(60, 7, f"{vals['Close']} kg", border=1)
+        pdf.cell(60, 7, f"{vals['Far']} kg", border=1, ln=True)
+
+    pdf.set_y(-15)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.cell(0, 10, "Page 2 of 2 - Recommended Weight Limits Matrix", align='L')
+
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- VIDEO PROCESSOR ---
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
+
 class REBAProcessor(VideoProcessorBase):
     def __init__(self):
-        self.pose = None
+        self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+        self.latest_frame = None
+        self.results_data = {
+            "trunk": 0, "neck": 0, "arm": 0, "total": 0,
+            "auto_zone": "Elbow to Knuckle", "auto_reach": "Close"
+        }
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
         h, w, _ = img.shape
+        
+        results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        
+        if results.pose_landmarks:
+            lm = results.pose_landmarks.landmark
+            
+            # 1. TRUNK ANGLE (Shoulder-Hip-Knee)
+            shld = [lm[11].x * w, lm[11].y * h]
+            hip = [lm[23].x * w, lm[23].y * h]
+            knee = [lm[25].x * w, lm[25].y * h]
+            t_angle = calculate_angle(shld, hip, knee)
+            t_score = score_trunk(t_angle)
+            
+            # 2. UPPER ARM ANGLE (Hip-Shoulder-Elbow)
+            elbw = [lm[13].x * w, lm[13].y * h]
+            a_angle = calculate_angle(hip, shld, elbw)
+            a_score = score_upper_arm(a_angle)
+            
+            # 3. NECK ANGLE (Nose-Shoulder-Hip)
+            nose = [lm[0].x * w, lm[0].y * h]
+            n_angle = calculate_angle(nose, shld, hip)
+            n_score = score_neck(n_angle)
 
-        # Lazy initialization inside recv to prevent model download blocking on stream launch
-        if self.pose is None:
-            try:
-                self.pose = mp_pose.Pose(
-                    static_image_mode=False,
-                    min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5,
-                    model_complexity=0
-                )
-            except Exception:
-                return frame.from_ndarray(img, format="bgr24")
+            # 4. AUTO LIFTING ZONE AND REACH DETECTION
+            wrst = [lm[15].x * w, lm[15].y * h]
+            if wrst[1] < shld[1]:
+                detected_zone = "Above Shoulder"
+            elif shld[1] <= wrst[1] < elbw[1]:
+                detected_zone = "Shoulder to Elbow"
+            elif elbw[1] <= wrst[1] < hip[1]:
+                detected_zone = "Elbow to Knuckle"
+            elif hip[1] <= wrst[1] < knee[1]:
+                detected_zone = "Knuckle to Mid-Leg"
+            else:
+                detected_zone = "Below Mid-Leg"
 
-        try:
-            results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            arm_reach_dist = abs(wrst[0] - shld[0])
+            detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
+            
+            # Update UI Data
+            self.results_data = {
+                "trunk": t_score, "neck": n_score, "arm": a_score, 
+                "total": t_score + n_score + a_score,
+                "auto_zone": detected_zone, "auto_reach": detected_reach
+            }
+            
+            # Visual Overlays
+            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            cv2.putText(img, f"REBA: {self.results_data['total']}", (10, 50), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            self.latest_frame = img
+            
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-            if results and results.pose_landmarks:
-                lm = results.pose_landmarks.landmark
-                
-                sh = [lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * w, lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * h]
-                el = [lm[mp_pose.PoseLandmark.LEFT_ELBOW.value].x * w, lm[mp_pose.PoseLandmark.LEFT_ELBOW.value].y * h]
-                wr = [lm[mp_pose.PoseLandmark.LEFT_WRIST.value].x * w, lm[mp_pose.PoseLandmark.LEFT_WRIST.value].y * h]
-                hp = [lm[mp_pose.PoseLandmark.LEFT_HIP.value].x * w, lm[mp_pose.PoseLandmark.LEFT_HIP.value].y * h]
-                kn = [lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x * w, lm[mp_pose.PoseLandmark.LEFT_KNEE.value].y * h]
-                ea = [lm[mp_pose.PoseLandmark.LEFT_EAR.value].x * w, lm[mp_pose.PoseLandmark.LEFT_EAR.value].y * h]
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="REBA AI Auditor", layout="wide")
+st.title("🛡️ Live REBA Auditor")
 
-                trunk_a = calculate_angle([hp[0], hp[1] - 100], hp, sh)
-                neck_a = calculate_angle(sh, ea, [ea[0], ea[1] - 100])
-                upper_a = calculate_angle(hp, sh, el)
-                lower_a = calculate_angle(sh, el, wr)
-                leg_a = calculate_angle(hp, kn, [kn[0], kn[1] + 100])
+with st.sidebar:
+    st.header("Settings & MMH Inputs")
+    op_id = st.text_input("Operator ID", "OP-001")
+    profile = st.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
+    actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
 
-                t_s = 1 if trunk_a < 10 else (2 if trunk_a < 20 else 3)
-                n_s = 1 if neck_a < 20 else 2
-                l_s = 1 if leg_a < 30 else 2
-                u_s = 1 if upper_a < 20 else (2 if upper_a < 45 else 3)
-                lo_s = 1 if 60 <= lower_a <= 100 else 2
-                w_s = 1
+ctx = webrtc_streamer(
+    key="reba-ai",
+    video_processor_factory=REBAProcessor,
+    rtc_configuration={"iceServers": get_ice_servers()},
+    media_stream_constraints={"video": True, "audio": False}
+)
 
-                reba = get_reba_score(t_s, n_s, l_s, u_s, lo_s, w_s)
-
-                st.session_state.result_queue.put({
-                    "reba": reba, "trunk": t_s, "neck": n_s, 
-                    "upper_arm": u_s, "lower_arm": lo_s, "legs": l_s
-                })
-
-                mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-                cv2.putText(img, f"REBA: {reba}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
-
-        except Exception:
-            pass
-
-        return frame.from_ndarray(img, format="bgr24")
-
-# --- UI LAYOUT ---
-st.title("🦾 REBA Ergonomic Risk & Manual Lifting Audit")
-
-col1, col2 = st.columns([3, 2])
-
-with col1:
-    st.subheader("📷 Live Assessment Stream")
-    webrtc_streamer(
-        key="reba-live-stream-v5",
-        mode=WebRtcMode.SENDRECV,
-        rtc_configuration=RTC_CONFIGURATION,
-        video_processor_factory=REBAProcessor,
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True
-    )
-
-with col2:
-    with st.expander("🏋️ Manual Weight Lifting Parameters", expanded=True):
-        op_id = st.text_input("Operator ID", value="OP-001")
-        profile = st.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
-        actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
-
-    st.markdown("---")
-    st.subheader("📊 Dynamic Metrics")
+if ctx.video_processor:
+    data = ctx.video_processor.results_data
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Trunk Score", data['trunk'])
+    col2.metric("Neck Score", data['neck'])
+    col3.metric("Arm Score", data['arm'])
+    col4.metric("Total Risk", data['total'])
     
-    latest_data = {"reba": 1, "trunk": 1, "neck": 1, "upper_arm": 1, "lower_arm": 1, "legs": 1}
-    while not st.session_state.result_queue.empty():
-        latest_data = st.session_state.result_queue.get()
-        st.session_state.log_reba.append(latest_data["reba"])
-        st.session_state.log_trunk.append(latest_data["trunk"])
-        st.session_state.log_neck.append(latest_data["neck"])
-        st.session_state.log_upper_arm.append(latest_data["upper_arm"])
+    st.caption(f"📍 Auto-Detected Lifting Zone: **{data.get('auto_zone', 'Elbow to Knuckle')} ({data.get('auto_reach', 'Close')})**")
 
-    reba_score = latest_data["reba"]
-    risk, action = get_risk_level(reba_score)
-
-    m1, m2 = st.columns(2)
-    m1.metric("REBA Score", f"{reba_score} / 12")
-    m2.metric("Risk Level", risk)
-
-    st.info(f"Necessary action: {action}")
-
-    st.markdown("---")
-    st.subheader("Sub-Score Breakdown")
-    s1, s2, s3 = st.columns(3)
-    s1.metric("Trunk", latest_data["trunk"])
-    s2.metric("Neck", latest_data["neck"])
-    s3.metric("Legs", latest_data["legs"])
-
-    s4, s5 = st.columns(2)
-    s4.metric("Upper Arm", latest_data["upper_arm"])
-    s5.metric("Lower Arm", latest_data["lower_arm"])
-
-    st.markdown("---")
-    if st.button("Generate Full 2-Page Audit PDF"):
-        pdf_data = generate_2page_pdf(
-            op_id, profile, actual_wt, "Elbow to Knuckle", "Close",
-            st.session_state.log_reba, st.session_state.log_trunk,
-            st.session_state.log_neck, st.session_state.log_upper_arm
+if st.button("📸 Generate 2-Page Audit Report"):
+    if ctx.video_processor and ctx.video_processor.latest_frame is not None:
+        pdf_bytes = generate_2page_pdf(
+            op_id, profile, actual_wt, 
+            ctx.video_processor.results_data, 
+            ctx.video_processor.latest_frame
         )
-        st.download_button(
-            label="💾 Download 2-Page REBA & MMH Report (.pdf)",
-            data=pdf_data,
-            file_name=f"REBA_Lifting_Audit_{op_id}.pdf",
-            mime="application/pdf"
-        )
+        st.download_button("📥 Download 2-Page PDF Report", pdf_bytes, f"Audit_{op_id}.pdf", mime="application/pdf")
