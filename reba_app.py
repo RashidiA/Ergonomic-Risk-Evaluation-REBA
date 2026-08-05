@@ -100,6 +100,7 @@ class REBAProcessor(VideoProcessorBase):
         self.log_trunk = []
         self.log_neck = []
         self.log_arm = []
+        self.log_total = []
         self.detected_zones = []
         self.start_time = time.time()
 
@@ -146,12 +147,14 @@ class REBAProcessor(VideoProcessorBase):
             self.log_trunk.append(t_score)
             self.log_neck.append(n_score)
             self.log_arm.append(a_score)
+            self.log_total.append(total_score)
             self.detected_zones.append(zone)
 
             if len(self.log_trunk) > 300:
                 self.log_trunk.pop(0)
                 self.log_neck.pop(0)
                 self.log_arm.pop(0)
+                self.log_total.pop(0)
                 self.detected_zones.pop(0)
 
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
@@ -162,92 +165,188 @@ class REBAProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- SAFE PDF REPORT GENERATOR (LATIN-1 / UNICODE PROOF) ---
+# --- SAFE PDF REPORT GENERATOR WITH MATRIX & RISK TABLE ---
 def generate_pdf_report(op_id, duration, gender, actual_weight, 
-                        trunk_stats, neck_stats, arm_stats, detected_zone, max_weight, frame_img):
+                        trunk_stats, neck_stats, arm_stats, overall_score, detected_zone, max_weight, frame_img):
     pdf = FPDF()
     
-    # PAGE 1: REBA POSTURE AUDIT REPORT
+    # ================= PAGE 1: REBA POSTURE AUDIT REPORT =================
     pdf.add_page()
     pdf.set_font("Arial", 'B', 18)
     pdf.cell(190, 10, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10)
     pdf.cell(190, 6, f"Operator: {op_id} | Total Duration: {duration:.1f} sec", ln=True, align='C')
-    pdf.ln(5)
+    pdf.ln(3)
     
+    # Image Header
     if frame_img is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             cv2.imwrite(tmp.name, frame_img)
-            pdf.image(tmp.name, x=45, y=32, w=120)
+            pdf.image(tmp.name, x=55, y=28, w=100)
             os.unlink(tmp.name)
-        pdf.ln(95)
+        pdf.ln(75)
 
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(190, 8, "Posture Duration Analysis Breakdown", ln=True)
-    pdf.set_font("Arial", size=10)
-    pdf.ln(2)
+    # REBA Score Summary Banner
+    pdf.set_font("Arial", 'B', 12)
+    pdf.set_fill_color(240, 240, 240)
+    pdf.cell(190, 8, f" Evaluated Overall REBA Score: {overall_score}", border=1, ln=True, fill=True)
+    pdf.ln(3)
+
+    # Posture Duration Breakdown Table
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(190, 6, "Posture Duration Analysis Breakdown", ln=True)
+    pdf.set_font("Arial", size=9)
+    pdf.ln(1)
     
     headers = ["Body Part", "Score 1-2 (%)", "Score 3-4 (%)", "Score 5+ (%)"]
-    w_col = [45, 45, 45, 45]
+    w_col = [47, 47, 47, 47]
     for i, h in enumerate(headers):
-        pdf.cell(w_col[i], 8, h, border=1, align='C')
+        pdf.cell(w_col[i], 7, h, border=1, align='C')
     pdf.ln()
 
     body_data = [("Trunk", trunk_stats), ("Neck", neck_stats), ("Upper Arm", arm_stats)]
     for label, stats in body_data:
-        pdf.cell(w_col[0], 8, label, border=1)
-        pdf.cell(w_col[1], 8, f"{stats.get('low', 0):.1f}%", border=1, align='C')
-        pdf.cell(w_col[2], 8, f"{stats.get('mid', 0):.1f}%", border=1, align='C')
-        pdf.cell(w_col[3], 8, f"{stats.get('high', 0):.1f}%", border=1, align='C')
+        pdf.cell(w_col[0], 6, label, border=1)
+        pdf.cell(w_col[1], 6, f"{stats.get('low', 0):.1f}%", border=1, align='C')
+        pdf.cell(w_col[2], 6, f"{stats.get('mid', 0):.1f}%", border=1, align='C')
+        pdf.cell(w_col[3], 6, f"{stats.get('high', 0):.1f}%", border=1, align='C')
         pdf.ln()
 
-    pdf.ln(10)
-    pdf.set_font("Arial", 'I', 9)
-    pdf.cell(190, 6, "Page 1 of 2 - Posture Risk Evaluation", align='C')
+    pdf.ln(4)
 
-    # PAGE 2: MANUAL WEIGHT LIFTING AUDIT
+    # Standard REBA Score Risk Table (As requested in Image 2)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(190, 6, "REBA Standard Action & Risk Table", ln=True)
+    pdf.set_font("Arial", size=9)
+    pdf.ln(1)
+
+    reba_table_data = [
+        ("1", "None", "Not necessary", (146, 208, 80)),        # Green
+        ("2-3", "Low", "May be necessary", (255, 255, 0)),     # Yellow
+        ("4-7", "Medium", "Necessary", (255, 153, 0)),         # Orange
+        ("8-10", "High", "Necessary and soon", (255, 0, 0)),    # Red
+        ("11-15", "Very high", "Necessary urgent", (192, 0, 0)) # Dark Red
+    ]
+
+    pdf.cell(35, 7, "REBA Score", border=1, align='C')
+    pdf.cell(45, 7, "Risk level", border=1, align='C')
+    pdf.cell(110, 7, "Action", border=1, align='C')
+    pdf.ln()
+
+    for score_range, risk_level, action, rgb in reba_table_data:
+        # Determine if current row matches total score
+        is_active = False
+        if score_range == "1" and overall_score == 1: is_active = True
+        elif score_range == "2-3" and 2 <= overall_score <= 3: is_active = True
+        elif score_range == "4-7" and 4 <= overall_score <= 7: is_active = True
+        elif score_range == "8-10" and 8 <= overall_score <= 10: is_active = True
+        elif score_range == "11-15" and overall_score >= 11: is_active = True
+
+        pdf.set_font("Arial", 'B' if is_active else '', 9)
+        
+        # Highlight current active risk category
+        prefix = "-> " if is_active else ""
+        pdf.cell(35, 6, f"{prefix}{score_range}", border=1, align='C')
+        
+        pdf.set_fill_color(*rgb)
+        if is_active:
+            pdf.set_text_color(255, 255, 255) if risk_level in ["High", "Very high"] else pdf.set_text_color(0, 0, 0)
+        else:
+            pdf.set_text_color(0, 0, 0)
+            
+        pdf.cell(45, 6, risk_level, border=1, align='C', fill=True)
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(110, 6, action, border=1, align='L')
+        pdf.ln()
+
+    pdf.ln(5)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.cell(190, 5, "Page 1 of 2 - REBA Posture Risk Evaluation", align='C')
+
+    # ================= PAGE 2: MANUAL WEIGHT LIFTING AUDIT =================
     pdf.add_page()
     pdf.set_font("Arial", 'B', 18)
     pdf.cell(190, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10)
     pdf.cell(190, 6, f"Operator: {op_id} | Evaluation Profile: {gender}", ln=True, align='C')
-    pdf.ln(10)
+    pdf.ln(5)
     
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(190, 8, "Manual Material Handling Evaluation", ln=True)
-    pdf.ln(4)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(190, 6, "Manual Material Handling Evaluation Summary", ln=True)
+    pdf.ln(2)
     
-    pdf.set_font("Arial", size=11)
-    pdf.cell(190, 8, f"Automatically Evaluated Zone: {detected_zone}", border='B', ln=True)
-    pdf.cell(190, 8, f"Actual Weight Lifted: {actual_weight:.1f} kg", border='B', ln=True)
-    pdf.cell(190, 8, f"Max Recommended Limit: {max_weight:.1f} kg", border='B', ln=True)
-    pdf.ln(8)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(190, 7, f"Automatically Evaluated Zone: {detected_zone}", border='B', ln=True)
+    pdf.cell(190, 7, f"Actual Weight Lifted: {actual_weight:.1f} kg", border='B', ln=True)
+    pdf.cell(190, 7, f"Max Recommended Limit: {max_weight:.1f} kg", border='B', ln=True)
+    pdf.ln(5)
     
     is_exceeded = actual_weight > max_weight
-    pdf.set_font("Arial", 'B', 14)
+    pdf.set_font("Arial", 'B', 12)
     if is_exceeded:
         pdf.set_text_color(200, 0, 0)
-        pdf.cell(190, 12, f"SAFETY STATUS: EXCEEDED RECOMMENDED LIMIT (+{(actual_weight - max_weight):.1f} kg)", border=1, align='C', ln=True)
+        pdf.cell(190, 10, f"SAFETY STATUS: EXCEEDED RECOMMENDED LIMIT (+{(actual_weight - max_weight):.1f} kg)", border=1, align='C', ln=True)
     else:
         pdf.set_text_color(0, 128, 0)
-        pdf.cell(190, 12, "SAFETY STATUS: WITHIN SAFE ERGONOMIC LIMIT", border=1, align='C', ln=True)
+        pdf.cell(190, 10, "SAFETY STATUS: WITHIN SAFE ERGONOMIC LIMIT", border=1, align='C', ln=True)
     
     pdf.set_text_color(0, 0, 0)
-    pdf.ln(15)
+    pdf.ln(6)
 
+    # Weight Lifting Position Reference Matrix Table (As requested in Image 3)
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 8, "Ergonomic Recommendations:", ln=True)
-    pdf.set_font("Arial", size=10)
+    pdf.cell(190, 6, f"Recommended Weight Matrix Reference ({gender})", ln=True)
+    pdf.set_font("Arial", size=9)
+    pdf.ln(1)
+
+    pdf.cell(70, 6, "Height Zone", border=1, align='C')
+    pdf.cell(60, 6, "Close Reach Limit (kg)", border=1, align='C')
+    pdf.cell(60, 6, "Far Reach Limit (kg)", border=1, align='C')
+    pdf.ln()
+
+    zone_rows = [
+        ("Above Shoulder", "Above Shoulder (Close)", "Above Shoulder (Far)"),
+        ("Shoulder to Elbow", "Shoulder to Elbow (Close)", "Shoulder to Elbow (Far)"),
+        ("Elbow to Knuckle", "Elbow to Knuckle (Close)", "Elbow to Knuckle (Far)"),
+        ("Knuckle to Mid-Leg", "Knuckle to Mid-Leg (Close)", "Knuckle to Mid-Leg (Far)"),
+        ("Below Mid-Leg", "Below Mid-Leg (Close)", "Below Mid-Leg (Far)")
+    ]
+
+    for height_label, close_key, far_key in zone_rows:
+        close_limit = WEIGHT_LIMITS[gender].get(close_key, 0.0)
+        far_limit = WEIGHT_LIMITS[gender].get(far_key, 0.0)
+        
+        # Check if this zone is current active evaluated zone
+        is_current_zone = (close_key == detected_zone or far_key == detected_zone)
+        
+        if is_current_zone:
+            pdf.set_fill_color(255, 255, 153) # Highlight active row in yellow
+            pdf.set_font("Arial", 'B', 9)
+            prefix = "-> "
+        else:
+            pdf.set_fill_color(255, 255, 255)
+            pdf.set_font("Arial", '', 9)
+            prefix = ""
+
+        pdf.cell(70, 6, f"{prefix}{height_label}", border=1, fill=is_current_zone)
+        pdf.cell(60, 6, f"{close_limit:.1f} kg", border=1, align='C', fill=is_current_zone)
+        pdf.cell(60, 6, f"{far_limit:.1f} kg", border=1, align='C', fill=is_current_zone)
+        pdf.ln()
+
+    pdf.ln(6)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(190, 6, "Ergonomic Recommendations:", ln=True)
+    pdf.set_font("Arial", size=9)
     if is_exceeded:
-        pdf.multi_cell(190, 6, "1. Reduce load weight or utilize mechanical lifting assistance (e.g., hoist, vacuum lifter).\n2. Reposition storage height closer to elbow/knuckle level to increase threshold.\n3. Implement job rotation or dual-operator lifting protocols.")
+        pdf.multi_cell(190, 5, "1. Reduce load weight or utilize mechanical lifting assistance (e.g., hoist, vacuum lifter).\n2. Reposition storage height closer to elbow/knuckle level to increase threshold.\n3. Implement job rotation or dual-operator lifting protocols.")
     else:
-        pdf.multi_cell(190, 6, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
+        pdf.multi_cell(190, 5, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
 
-    pdf.ln(40)
-    pdf.set_font("Arial", 'I', 9)
-    pdf.cell(190, 6, "Page 2 of 2 - Weight Limits Based on Recommended Ergonomic Standards", align='C')
+    pdf.ln(10)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.cell(190, 5, "Page 2 of 2 - Recommended Weight Limits Matrix Standard", align='C')
 
-    # Fail-safe Byte output conversion for all FPDF versions
+    # Safe PDF Byte Conversion
     pdf_output = pdf.output(dest='S')
     if isinstance(pdf_output, str):
         return pdf_output.encode('latin-1', 'replace')
@@ -299,6 +398,7 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
     log_trunk = []
     log_neck = []
     log_arm = []
+    log_total = []
     detected_zones = []
     frame_img = None
     duration = 5.0
@@ -307,6 +407,7 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
         log_trunk = list(ctx.video_processor.log_trunk)
         log_neck = list(ctx.video_processor.log_neck)
         log_arm = list(ctx.video_processor.log_arm)
+        log_total = list(ctx.video_processor.log_total)
         detected_zones = list(ctx.video_processor.detected_zones)
         frame_img = ctx.video_processor.latest_frame
         duration = max(1.0, time.time() - ctx.video_processor.start_time)
@@ -317,11 +418,14 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
         log_trunk = [d['trunk']]
         log_neck = [d['neck']]
         log_arm = [d['arm']]
+        log_total = [d['total']]
 
     t_stats = compute_percentage_breakdown(log_trunk)
     n_stats = compute_percentage_breakdown(log_neck)
     a_stats = compute_percentage_breakdown(log_arm)
     
+    overall_score = max(log_total) if log_total else 3
+
     if detected_zones:
         detected_zone = Counter(detected_zones).most_common(1)[0][0]
     else:
@@ -337,6 +441,7 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
         trunk_stats=t_stats,
         neck_stats=n_stats,
         arm_stats=a_stats,
+        overall_score=overall_score,
         detected_zone=detected_zone,
         max_weight=max_rec_weight,
         frame_img=frame_img
