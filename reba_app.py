@@ -27,6 +27,7 @@ if "recording_duration" not in st.session_state:
 
 # --- HELPER: ANGLE CALCULATION ---
 def calculate_angle(a, b, c):
+    """Calculates the angle at point 'b' given points 'a' and 'c'."""
     a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians * 180.0 / np.pi)
@@ -68,7 +69,7 @@ WEIGHT_LIMITS = {
     }
 }
 
-# --- FIREWALL BYPASS ---
+# --- FIREWALL BYPASS (METERED.CA) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
     api_key = st.secrets.get("METERED_API_KEY", "")
@@ -85,7 +86,7 @@ def get_ice_servers():
         {"urls": ["stun:stun1.l.google.com:19302"]}
     ]
 
-# --- VIDEO PROCESSOR WITH CONTINUOUS LOGGING ---
+# --- VIDEO PROCESSOR WITH CONTINUOUS ROLLING LOGS ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -95,7 +96,7 @@ class REBAProcessor(VideoProcessorBase):
         self.latest_frame = None
         self.results_data = {"trunk": 1, "neck": 1, "arm": 1, "total": 3}
         
-        # Continuous rolling logs (keeps last 300 frames)
+        # Continuous rolling logs (keeps maximum last 300 frames)
         self.log_trunk = []
         self.log_neck = []
         self.log_arm = []
@@ -128,7 +129,7 @@ class REBAProcessor(VideoProcessorBase):
                 "trunk": t_score, "neck": n_score, "arm": a_score, "total": total_score
             }
 
-            # Pose-based lifting zone detection
+            # Automatic pose-based lifting zone estimation
             wrist_y = wrist[1]
             if wrist_y < shld[1]:
                 zone = "Above Shoulder (Close)"
@@ -141,7 +142,7 @@ class REBAProcessor(VideoProcessorBase):
             else:
                 zone = "Below Mid-Leg (Close)"
             
-            # Continuously append logs (limit to last 300 frames)
+            # Continuously record logs
             self.log_trunk.append(t_score)
             self.log_neck.append(n_score)
             self.log_arm.append(a_score)
@@ -161,12 +162,12 @@ class REBAProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- PDF REPORT GENERATOR ---
+# --- SAFE PDF REPORT GENERATOR (LATIN-1 / UNICODE PROOF) ---
 def generate_pdf_report(op_id, duration, gender, actual_weight, 
                         trunk_stats, neck_stats, arm_stats, detected_zone, max_weight, frame_img):
     pdf = FPDF()
     
-    # PAGE 1
+    # PAGE 1: REBA POSTURE AUDIT REPORT
     pdf.add_page()
     pdf.set_font("Arial", 'B', 18)
     pdf.cell(190, 10, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
@@ -202,9 +203,9 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
 
     pdf.ln(10)
     pdf.set_font("Arial", 'I', 9)
-    pdf.cell(190, 6, "Page 1 of 2 — Posture Risk Evaluation", align='C')
+    pdf.cell(190, 6, "Page 1 of 2 - Posture Risk Evaluation", align='C')
 
-    # PAGE 2
+    # PAGE 2: MANUAL WEIGHT LIFTING AUDIT
     pdf.add_page()
     pdf.set_font("Arial", 'B', 18)
     pdf.cell(190, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
@@ -244,9 +245,13 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
 
     pdf.ln(40)
     pdf.set_font("Arial", 'I', 9)
-    pdf.cell(190, 6, "Page 2 of 2 — Weight Limits Based on Recommended Ergonomic Standards", align='C')
+    pdf.cell(190, 6, "Page 2 of 2 - Weight Limits Based on Recommended Ergonomic Standards", align='C')
 
-    return pdf.output(dest='S').encode('latin-1')
+    # Fail-safe Byte output conversion for all FPDF versions
+    pdf_output = pdf.output(dest='S')
+    if isinstance(pdf_output, str):
+        return pdf_output.encode('latin-1', 'replace')
+    return bytes(pdf_output)
 
 def compute_percentage_breakdown(log_list):
     if not log_list:
@@ -259,7 +264,7 @@ def compute_percentage_breakdown(log_list):
         "high": sum(counts[s] for s in counts if s >= 5) / total * 100.0
     }
 
-# --- UI SETUP ---
+# --- UI LAYOUT ---
 st.set_page_config(page_title="REBA & Lifting Ergonomic Auditor", layout="wide")
 st.title("🛡️ REBA & Weight Lifting Ergonomic Auditor")
 
@@ -291,7 +296,6 @@ st.markdown("---")
 st.header("📄 Audit PDF Generation")
 
 if st.button("📸 Generate 2-Page PDF Audit Report"):
-    # Multi-tier Data Extraction (Guarantees PDF Generation)
     log_trunk = []
     log_neck = []
     log_arm = []
@@ -307,7 +311,7 @@ if st.button("📸 Generate 2-Page PDF Audit Report"):
         frame_img = ctx.video_processor.latest_frame
         duration = max(1.0, time.time() - ctx.video_processor.start_time)
     
-    # Fallback to current processor state if log is empty
+    # Fallback to live data if list is completely empty
     if not log_trunk and ctx.video_processor:
         d = ctx.video_processor.results_data
         log_trunk = [d['trunk']]
