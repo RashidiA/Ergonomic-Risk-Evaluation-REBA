@@ -1,9 +1,7 @@
-streamlit
-streamlit-webrtc
-mediapipe==0.10.11
+streamlit>=1.35.0
+streamlit-webrtc>=0.47.0
+mediapipe>=0.10.11
 opencv-python-headless
-fpdf
+protobuf>=4.25.3
 numpy
-Pillow
-av
-requests
+pillow
