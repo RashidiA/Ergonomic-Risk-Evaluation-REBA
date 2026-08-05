@@ -5,10 +5,10 @@ import numpy as np
 import streamlit as st
 import queue
 from collections import Counter
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
 from fpdf import FPDF
 
-# --- SAFE MEDIAPIPE IMPORTS (Prevents AttributeError on Streamlit Cloud) ---
+# --- SAFE MEDIAPIPE IMPORTS ---
 import mediapipe as mp
 
 try:
@@ -25,12 +25,23 @@ st.set_page_config(
     layout="wide"
 )
 
-# Shared Queue for Thread-Safe Communication between WebRTC thread & Streamlit UI
+# Shared Queue for Thread-Safe Communication
 if "result_queue" not in st.session_state:
     st.session_state.result_queue = queue.Queue()
 
 if "log_reba" not in st.session_state:
     st.session_state.log_reba = []
+if "log_trunk" not in st.session_state:
+    st.session_state.log_trunk = []
+if "log_neck" not in st.session_state:
+    st.session_state.log_neck = []
+if "log_upper_arm" not in st.session_state:
+    st.session_state.log_upper_arm = []
+
+# --- STUN CONFIGURATION (Fixes Connection/STUN Error on Cloud) ---
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]}
+)
 
 # --- HELPER FUNCTIONS ---
 def calculate_angle(a, b, c):
@@ -39,7 +50,7 @@ def calculate_angle(a, b, c):
     angle = np.abs(radians * 180.0 / np.pi)
     return 360.0 - angle if angle > 180.0 else angle
 
-# --- REBA SCORING TABLES ---
+# --- REBA TABLES ---
 TABLE_A = [
     [[1, 2, 3, 4], [2, 3, 4, 5], [2, 4, 5, 6], [3, 4, 5, 6]],
     [[2, 3, 4, 5], [3, 4, 5, 6], [4, 5, 6, 7], [5, 6, 7, 8]],
@@ -72,47 +83,162 @@ TABLE_C = [
     [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12]
 ]
 
+# MANUAL WEIGHT LIFTING REFERENCE MATRIX (kg)
+LIFTING_MATRIX = {
+    "Male": {
+        "Above Shoulder": {"Close": 10.0, "Far": 5.0},
+        "Shoulder to Elbow": {"Close": 20.0, "Far": 10.0},
+        "Elbow to Knuckle": {"Close": 25.0, "Far": 15.0},
+        "Knuckle to Mid-Leg": {"Close": 20.0, "Far": 10.0},
+        "Below Mid-Leg": {"Close": 10.0, "Far": 5.0}
+    },
+    "Female": {
+        "Above Shoulder": {"Close": 7.0, "Far": 3.0},
+        "Shoulder to Elbow": {"Close": 13.0, "Far": 7.0},
+        "Elbow to Knuckle": {"Close": 16.0, "Far": 10.0},
+        "Knuckle to Mid-Leg": {"Close": 13.0, "Far": 7.0},
+        "Below Mid-Leg": {"Close": 7.0, "Far": 3.0}
+    }
+}
+
 def get_reba_score(trunk, neck, legs, upper_arm, lower_arm, wrist, load=0, coupling=0, activity=0):
     try:
         score_a = TABLE_A[trunk - 1][neck - 1][legs - 1] + load
         score_b = TABLE_B[upper_arm - 1][lower_arm - 1][wrist - 1] + coupling
         score_c = TABLE_C[score_a - 1][score_b - 1]
-        return min(score_c + activity, 12)
+        return min(score_c + activity, 15)
     except IndexError:
         return 1
 
 def get_risk_level(score):
     if score == 1:
-        return "Negligible", "🟢 Necessary action: None"
+        return "None", "Not necessary"
     elif 2 <= score <= 3:
-        return "Low", "🟡 Necessary action: May be necessary"
+        return "Low", "May be necessary"
     elif 4 <= score <= 7:
-        return "Medium", "🟠 Necessary action: Necessary"
+        return "Medium", "Necessary"
     elif 8 <= score <= 10:
-        return "High", "🔴 Necessary action: Soon"
+        return "High", "Necessary and soon"
     else:
-        return "Very High", "🚨 Necessary action: Immediate"
+        return "Very high", "Necessary urgent"
 
-# --- PDF GENERATOR ---
-def generate_pdf_report(logs):
+def calc_pct(log):
+    if not log:
+        return "0.0%", "0.0%", "0.0%"
+    total = len(log)
+    s12 = sum(1 for x in log if x in [1, 2]) / total * 100
+    s34 = sum(1 for x in log if x in [3, 4]) / total * 100
+    s5p = sum(1 for x in log if x >= 5) / total * 100
+    return f"{s12:.1f}%", f"{s34:.1f}%", f"{s5p:.1f}%"
+
+# --- 2-PAGE PDF GENERATOR ---
+def generate_2page_pdf(operator_id, profile, actual_weight, height_zone, reach, reba_logs, trunk_logs, neck_logs, arm_logs):
     pdf = FPDF()
+    
+    # --- PAGE 1: POSTURE AUDIT ---
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "REBA Ergonomic Risk Evaluation Summary", ln=True, align='C')
-    pdf.ln(10)
-    
-    pdf.set_font("Arial", size=12)
-    pdf.cell(0, 10, f"Total Frames Evaluated: {len(logs)}", ln=True)
-    
-    if logs:
-        avg_score = round(sum(logs) / len(logs), 2)
-        max_score = max(logs)
-        pdf.cell(0, 10, f"Average REBA Score: {avg_score}", ln=True)
-        pdf.cell(0, 10, f"Peak REBA Score: {max_score}", ln=True)
-        
-        risk_level, action = get_risk_level(int(avg_score))
-        pdf.cell(0, 10, f"Overall Risk Category: {risk_level}", ln=True)
-        pdf.cell(0, 10, f"Recommendation: {action}", ln=True)
+    pdf.cell(0, 10, "REBA POSTURE AUDIT REPORT", ln=True, align='L')
+    pdf.set_font("Arial", size=10)
+    duration = len(reba_logs) * 0.1  # Approx sampling time
+    eval_reba = max(reba_logs) if reba_logs else 1
+    pdf.cell(0, 8, f"Operator: {operator_id} | Total Duration: {duration:.1f} sec", ln=True)
+    pdf.cell(0, 8, f"Evaluated Overall REBA Score: {eval_reba}", ln=True)
+    pdf.ln(5)
+
+    # Posture Duration Analysis Breakdown
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, "Posture Duration Analysis Breakdown", ln=True)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(45, 7, "Body Part", border=1)
+    pdf.cell(45, 7, "Score 1-2 (%)", border=1)
+    pdf.cell(45, 7, "Score 3-4 (%)", border=1)
+    pdf.cell(45, 7, "Score 5+ (%)", border=1, ln=True)
+
+    pdf.set_font("Arial", size=9)
+    for b_name, b_log in [("Trunk", trunk_logs), ("Neck", neck_logs), ("Upper Arm", arm_logs)]:
+        s12, s34, s5p = calc_pct(b_log)
+        pdf.cell(45, 7, b_name, border=1)
+        pdf.cell(45, 7, s12, border=1)
+        pdf.cell(45, 7, s34, border=1)
+        pdf.cell(45, 7, s5p, border=1, ln=True)
+
+    pdf.ln(8)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, "REBA Standard Action & Risk Table", ln=True)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(35, 7, "REBA Score", border=1)
+    pdf.cell(45, 7, "Risk level", border=1)
+    pdf.cell(100, 7, "Action", border=1, ln=True)
+
+    r_table = [
+        ("1", "None", "Not necessary"),
+        ("2-3", "Low", "May be necessary"),
+        ("4-7", "Medium", "Necessary"),
+        ("8-10", "High", "Necessary and soon"),
+        ("11-15", "Very high", "Necessary urgent")
+    ]
+    pdf.set_font("Arial", size=9)
+    for sc, r_lvl, act in r_table:
+        prefix = "-> " if (sc == "2-3" and eval_reba in [2, 3]) or (sc == "4-7" and 4 <= eval_reba <= 7) else ""
+        pdf.cell(35, 7, f"{prefix}{sc}", border=1)
+        pdf.cell(45, 7, r_lvl, border=1)
+        pdf.cell(100, 7, act, border=1, ln=True)
+
+    pdf.set_y(-15)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.cell(0, 10, "Page 1 of 2 - REBA Posture Risk Evaluation", align='L')
+
+    # --- PAGE 2: MANUAL WEIGHT LIFTING AUDIT ---
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(0, 6, f"Operator: {operator_id} | Evaluation Profile: {profile}", ln=True)
+    pdf.ln(4)
+
+    max_limit = LIFTING_MATRIX[profile][height_zone][reach]
+    safety_status = "WITHIN SAFE ERGONOMIC LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE ERGONOMIC LIMIT"
+
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, "Manual Material Handling Evaluation Summary", ln=True)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(0, 6, f"Automatically Evaluated Zone: {height_zone} ({reach})", ln=True)
+    pdf.cell(0, 6, f"Actual Weight Lifted: {actual_weight:.1f} kg", ln=True)
+    pdf.cell(0, 6, f"Max Recommended Limit: {max_limit:.1f} kg", ln=True)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 8, f"SAFETY STATUS: {safety_status}", ln=True)
+    pdf.ln(4)
+
+    # Matrix Reference
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 8, f"Recommended Weight Matrix Reference ({profile})", ln=True)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(60, 7, "Height Zone", border=1)
+    pdf.cell(60, 7, "Close Reach Limit (kg)", border=1)
+    pdf.cell(60, 7, "Far Reach Limit (kg)", border=1, ln=True)
+
+    pdf.set_font("Arial", size=9)
+    for z_name, vals in LIFTING_MATRIX[profile].items():
+        prefix = "-> " if z_name == height_zone else ""
+        pdf.cell(60, 7, f"{prefix}{z_name}", border=1)
+        pdf.cell(60, 7, f"{vals['Close']} kg", border=1)
+        pdf.cell(60, 7, f"{vals['Far']} kg", border=1, ln=True)
+
+    pdf.ln(6)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "Ergonomic Recommendations:", ln=True)
+    pdf.set_font("Arial", size=9)
+    if actual_weight <= max_limit:
+        pdf.cell(0, 5, "1. Load weight remains safe for standard execution in this zone.", ln=True)
+        pdf.cell(0, 5, "2. Maintain current reach distance and vertical placement guidelines.", ln=True)
+    else:
+        pdf.cell(0, 5, "1. REDUCE LOAD: Actual weight exceeds zone limit.", ln=True)
+        pdf.cell(0, 5, "2. Move item closer to body or introduce mechanical lift assist.", ln=True)
+
+    pdf.set_y(-15)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.cell(0, 10, "Page 2 of 2 - Recommended Weight Limits Matrix Standard", align='L')
 
     buffer = io.BytesIO()
     pdf.output(buffer)
@@ -131,7 +257,6 @@ class REBAProcessor(VideoProcessorBase):
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             
-            # Left side keypoints
             sh = [lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * w, lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * h]
             el = [lm[mp_pose.PoseLandmark.LEFT_ELBOW.value].x * w, lm[mp_pose.PoseLandmark.LEFT_ELBOW.value].y * h]
             wr = [lm[mp_pose.PoseLandmark.LEFT_WRIST.value].x * w, lm[mp_pose.PoseLandmark.LEFT_WRIST.value].y * h]
@@ -139,14 +264,12 @@ class REBAProcessor(VideoProcessorBase):
             kn = [lm[mp_pose.PoseLandmark.LEFT_KNEE.value].x * w, lm[mp_pose.PoseLandmark.LEFT_KNEE.value].y * h]
             ea = [lm[mp_pose.PoseLandmark.LEFT_EAR.value].x * w, lm[mp_pose.PoseLandmark.LEFT_EAR.value].y * h]
 
-            # Angles
             trunk_a = calculate_angle([hp[0], hp[1] - 100], hp, sh)
             neck_a = calculate_angle(sh, ea, [ea[0], ea[1] - 100])
             upper_a = calculate_angle(hp, sh, el)
             lower_a = calculate_angle(sh, el, wr)
             leg_a = calculate_angle(hp, kn, [kn[0], kn[1] + 100])
 
-            # Sub-scores mapping
             t_s = 1 if trunk_a < 10 else (2 if trunk_a < 20 else 3)
             n_s = 1 if neck_a < 20 else 2
             l_s = 1 if leg_a < 30 else 2
@@ -156,20 +279,18 @@ class REBAProcessor(VideoProcessorBase):
 
             reba = get_reba_score(t_s, n_s, l_s, u_s, lo_s, w_s)
 
-            # Thread-safe dispatch to main UI
             st.session_state.result_queue.put({
                 "reba": reba, "trunk": t_s, "neck": n_s, 
                 "upper_arm": u_s, "lower_arm": lo_s, "legs": l_s
             })
 
-            # Video Skeleton & Overlay
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             cv2.putText(img, f"REBA: {reba}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
 
         return frame.from_ndarray(img, format="bgr24")
 
-# --- USER INTERFACE ---
-st.title("🦾 REBA Ergonomic Risk Evaluator")
+# --- STREAMLIT UI ---
+st.title("🦾 REBA Ergonomic Risk & Manual Lifting Audit")
 
 col1, col2 = st.columns([3, 2])
 
@@ -178,6 +299,7 @@ with col1:
     webrtc_streamer(
         key="reba-processor",
         mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
         video_processor_factory=REBAProcessor,
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True
@@ -186,11 +308,13 @@ with col1:
 with col2:
     st.subheader("📊 Dynamic Metrics")
     
-    # Process queue updates
     latest_data = {"reba": 1, "trunk": 1, "neck": 1, "upper_arm": 1, "lower_arm": 1, "legs": 1}
     while not st.session_state.result_queue.empty():
         latest_data = st.session_state.result_queue.get()
         st.session_state.log_reba.append(latest_data["reba"])
+        st.session_state.log_trunk.append(latest_data["trunk"])
+        st.session_state.log_neck.append(latest_data["neck"])
+        st.session_state.log_upper_arm.append(latest_data["upper_arm"])
 
     reba_score = latest_data["reba"]
     risk, action = get_risk_level(reba_score)
@@ -199,7 +323,7 @@ with col2:
     m1.metric("REBA Score", f"{reba_score} / 12")
     m2.metric("Risk Level", risk)
 
-    st.info(action)
+    st.info(f"Necessary action: {action}")
 
     st.markdown("---")
     st.subheader("Sub-Score Breakdown")
@@ -213,12 +337,23 @@ with col2:
     s5.metric("Lower Arm", latest_data["lower_arm"])
 
     st.markdown("---")
-    st.subheader("📄 Export Report")
-    if st.button("Generate Summary PDF"):
-        pdf_bytes = generate_pdf_report(st.session_state.log_reba)
+    st.subheader("🏋️ Manual Weight Lifting Parameters")
+    op_id = st.text_input("Operator ID", value="OP-001")
+    profile = st.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
+    actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
+    zone = st.selectbox("Lifting Zone", ["Above Shoulder", "Shoulder to Elbow", "Elbow to Knuckle", "Knuckle to Mid-Leg", "Below Mid-Leg"], index=2)
+    reach = st.radio("Reach Distance", ["Close", "Far"], horizontal=True)
+
+    st.markdown("---")
+    if st.button("Generate Full 2-Page Audit PDF"):
+        pdf_data = generate_2page_pdf(
+            op_id, profile, actual_wt, zone, reach,
+            st.session_state.log_reba, st.session_state.log_trunk,
+            st.session_state.log_neck, st.session_state.log_upper_arm
+        )
         st.download_button(
-            label="💾 Download REBA Report (.pdf)",
-            data=pdf_bytes,
-            file_name="REBA_Ergonomic_Report.pdf",
+            label="💾 Download 2-Page REBA & MMH Report (.pdf)",
+            data=pdf_data,
+            file_name=f"REBA_Lifting_Audit_{op_id}.pdf",
             mime="application/pdf"
         )
