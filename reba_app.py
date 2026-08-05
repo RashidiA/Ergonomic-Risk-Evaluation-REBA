@@ -10,7 +10,7 @@ import requests
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
 
-# --- GLOBAL PERSISTENT MEMORY ---
+# --- GLOBAL PERSISTENT MEMORY (Survives WebRTC STOP & Reruns) ---
 @st.cache_resource
 def get_global_store():
     return {
@@ -213,16 +213,18 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "Ergonomic Lifting Reference Diagram", ln=True)
     
-    # Save captured webcam snapshot as the diagram image
-    img_frame = store_data.get("frame")
-    if img_frame is None:
-        img_frame = np.zeros((300, 400, 3), dtype=np.uint8)
-        cv2.putText(img_frame, "Ergonomic Reference", (80, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    img_path = "assets/recommended_weight.png"
+    tmp_path = None
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        cv2.imwrite(tmp.name, img_frame)
-        tmp_path = tmp.name
-        pdf.image(tmp_path, x=15, y=pdf.get_y() + 2, w=80)
+    if os.path.exists(img_path):
+        pdf.image(img_path, x=15, y=pdf.get_y() + 2, w=80)
+    else:
+        placeholder = np.zeros((300, 400, 3), dtype=np.uint8)
+        cv2.putText(placeholder, "Image Not Found", (80, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            cv2.imwrite(tmp.name, placeholder)
+            tmp_path = tmp.name
+            pdf.image(tmp_path, x=15, y=pdf.get_y() + 2, w=80)
 
     pdf.set_x(102)
     pdf.set_font("Arial", 'B', 10)
@@ -231,7 +233,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.set_font("Arial", size=9)
     pdf.multi_cell(90, 5, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
 
-    if os.path.exists(tmp_path):
+    if tmp_path and os.path.exists(tmp_path):
         os.unlink(tmp_path)
 
     pdf.set_y(-15)
