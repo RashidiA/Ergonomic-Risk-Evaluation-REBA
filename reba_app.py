@@ -165,7 +165,7 @@ class REBAProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# --- SAFE PDF REPORT GENERATOR WITH MATRIX & RISK TABLE ---
+# --- SAFE PDF REPORT GENERATOR WITH REFERENCE DIAGRAM ---
 def generate_pdf_report(op_id, duration, gender, actual_weight, 
                         trunk_stats, neck_stats, arm_stats, overall_score, detected_zone, max_weight, frame_img):
     pdf = FPDF()
@@ -214,7 +214,7 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
 
     pdf.ln(4)
 
-    # Standard REBA Score Risk Table (As requested in Image 2)
+    # Standard REBA Score Risk Table
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(190, 6, "REBA Standard Action & Risk Table", ln=True)
     pdf.set_font("Arial", size=9)
@@ -234,7 +234,6 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
     pdf.ln()
 
     for score_range, risk_level, action, rgb in reba_table_data:
-        # Determine if current row matches total score
         is_active = False
         if score_range == "1" and overall_score == 1: is_active = True
         elif score_range == "2-3" and 2 <= overall_score <= 3: is_active = True
@@ -243,8 +242,6 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
         elif score_range == "11-15" and overall_score >= 11: is_active = True
 
         pdf.set_font("Arial", 'B' if is_active else '', 9)
-        
-        # Highlight current active risk category
         prefix = "-> " if is_active else ""
         pdf.cell(35, 6, f"{prefix}{score_range}", border=1, align='C')
         
@@ -269,39 +266,39 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
     pdf.cell(190, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
     pdf.set_font("Arial", 'I', 10)
     pdf.cell(190, 6, f"Operator: {op_id} | Evaluation Profile: {gender}", ln=True, align='C')
-    pdf.ln(5)
+    pdf.ln(3)
     
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 6, "Manual Material Handling Evaluation Summary", ln=True)
-    pdf.ln(2)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(190, 5, "Manual Material Handling Evaluation Summary", ln=True)
+    pdf.ln(1)
     
-    pdf.set_font("Arial", size=10)
-    pdf.cell(190, 7, f"Automatically Evaluated Zone: {detected_zone}", border='B', ln=True)
-    pdf.cell(190, 7, f"Actual Weight Lifted: {actual_weight:.1f} kg", border='B', ln=True)
-    pdf.cell(190, 7, f"Max Recommended Limit: {max_weight:.1f} kg", border='B', ln=True)
-    pdf.ln(5)
+    pdf.set_font("Arial", size=9)
+    pdf.cell(190, 6, f"Automatically Evaluated Zone: {detected_zone}", border='B', ln=True)
+    pdf.cell(190, 6, f"Actual Weight Lifted: {actual_weight:.1f} kg", border='B', ln=True)
+    pdf.cell(190, 6, f"Max Recommended Limit: {max_weight:.1f} kg", border='B', ln=True)
+    pdf.ln(3)
     
     is_exceeded = actual_weight > max_weight
-    pdf.set_font("Arial", 'B', 12)
+    pdf.set_font("Arial", 'B', 11)
     if is_exceeded:
         pdf.set_text_color(200, 0, 0)
-        pdf.cell(190, 10, f"SAFETY STATUS: EXCEEDED RECOMMENDED LIMIT (+{(actual_weight - max_weight):.1f} kg)", border=1, align='C', ln=True)
+        pdf.cell(190, 8, f"SAFETY STATUS: EXCEEDED RECOMMENDED LIMIT (+{(actual_weight - max_weight):.1f} kg)", border=1, align='C', ln=True)
     else:
         pdf.set_text_color(0, 128, 0)
-        pdf.cell(190, 10, "SAFETY STATUS: WITHIN SAFE ERGONOMIC LIMIT", border=1, align='C', ln=True)
+        pdf.cell(190, 8, "SAFETY STATUS: WITHIN SAFE ERGONOMIC LIMIT", border=1, align='C', ln=True)
     
     pdf.set_text_color(0, 0, 0)
-    pdf.ln(6)
+    pdf.ln(3)
 
-    # Weight Lifting Position Reference Matrix Table (As requested in Image 3)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 6, f"Recommended Weight Matrix Reference ({gender})", ln=True)
-    pdf.set_font("Arial", size=9)
+    # Weight Lifting Position Reference Matrix Table
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(190, 5, f"Recommended Weight Matrix Reference ({gender})", ln=True)
+    pdf.set_font("Arial", size=8)
     pdf.ln(1)
 
-    pdf.cell(70, 6, "Height Zone", border=1, align='C')
-    pdf.cell(60, 6, "Close Reach Limit (kg)", border=1, align='C')
-    pdf.cell(60, 6, "Far Reach Limit (kg)", border=1, align='C')
+    pdf.cell(70, 5, "Height Zone", border=1, align='C')
+    pdf.cell(60, 5, "Close Reach Limit (kg)", border=1, align='C')
+    pdf.cell(60, 5, "Far Reach Limit (kg)", border=1, align='C')
     pdf.ln()
 
     zone_rows = [
@@ -315,34 +312,41 @@ def generate_pdf_report(op_id, duration, gender, actual_weight,
     for height_label, close_key, far_key in zone_rows:
         close_limit = WEIGHT_LIMITS[gender].get(close_key, 0.0)
         far_limit = WEIGHT_LIMITS[gender].get(far_key, 0.0)
-        
-        # Check if this zone is current active evaluated zone
         is_current_zone = (close_key == detected_zone or far_key == detected_zone)
         
         if is_current_zone:
-            pdf.set_fill_color(255, 255, 153) # Highlight active row in yellow
-            pdf.set_font("Arial", 'B', 9)
+            pdf.set_fill_color(255, 255, 153)
+            pdf.set_font("Arial", 'B', 8)
             prefix = "-> "
         else:
             pdf.set_fill_color(255, 255, 255)
-            pdf.set_font("Arial", '', 9)
+            pdf.set_font("Arial", '', 8)
             prefix = ""
 
-        pdf.cell(70, 6, f"{prefix}{height_label}", border=1, fill=is_current_zone)
-        pdf.cell(60, 6, f"{close_limit:.1f} kg", border=1, align='C', fill=is_current_zone)
-        pdf.cell(60, 6, f"{far_limit:.1f} kg", border=1, align='C', fill=is_current_zone)
+        pdf.cell(70, 5, f"{prefix}{height_label}", border=1, fill=is_current_zone)
+        pdf.cell(60, 5, f"{close_limit:.1f} kg", border=1, align='C', fill=is_current_zone)
+        pdf.cell(60, 5, f"{far_limit:.1f} kg", border=1, align='C', fill=is_current_zone)
         pdf.ln()
 
-    pdf.ln(6)
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(190, 6, "Ergonomic Recommendations:", ln=True)
-    pdf.set_font("Arial", size=9)
-    if is_exceeded:
-        pdf.multi_cell(190, 5, "1. Reduce load weight or utilize mechanical lifting assistance (e.g., hoist, vacuum lifter).\n2. Reposition storage height closer to elbow/knuckle level to increase threshold.\n3. Implement job rotation or dual-operator lifting protocols.")
-    else:
-        pdf.multi_cell(190, 5, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
+    pdf.ln(3)
 
-    pdf.ln(10)
+    # Reference Diagram Image Insertion (Updated Path for assets/)
+    diagram_path = "assets/recommended_weight.png"
+    if os.path.exists(diagram_path):
+        pdf.set_font("Arial", 'B', 10)
+        pdf.cell(190, 5, "Ergonomic Lifting Reference Diagram", ln=True)
+        pdf.image(diagram_path, x=40, y=pdf.get_y() + 2, w=130)
+        pdf.ln(68)
+
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(190, 5, "Ergonomic Recommendations:", ln=True)
+    pdf.set_font("Arial", size=8)
+    if is_exceeded:
+        pdf.multi_cell(190, 4, "1. Reduce load weight or utilize mechanical lifting assistance (e.g., hoist, vacuum lifter).\n2. Reposition storage height closer to elbow/knuckle level to increase threshold.\n3. Implement job rotation or dual-operator lifting protocols.")
+    else:
+        pdf.multi_cell(190, 4, "1. Load weight remains safe for standard execution in this zone.\n2. Maintain current reach distance and vertical placement guidelines.")
+
+    pdf.ln(4)
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(190, 5, "Page 2 of 2 - Recommended Weight Limits Matrix Standard", align='C')
 
