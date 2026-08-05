@@ -6,13 +6,11 @@ import av
 import tempfile
 import os
 import requests
-import io
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
 
 # --- HELPER: ANGLE CALCULATION ---
 def calculate_angle(a, b, c):
-    """Calculates the angle at point 'b' given points 'a' and 'c'."""
     a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians * 180.0 / np.pi)
@@ -36,7 +34,7 @@ def score_upper_arm(angle):
     if angle <= 90: return 3
     return 4
 
-# --- MANUAL WEIGHT LIFTING REFERENCE MATRIX (kg) ---
+# --- MANUAL WEIGHT LIFTING MATRIX ---
 LIFTING_MATRIX = {
     "Male": {
         "Above Shoulder": {"Close": 10.0, "Far": 5.0},
@@ -57,7 +55,6 @@ LIFTING_MATRIX = {
 # --- FIREWALL BYPASS (METERED.CA) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
-    """Forces connection using specific App Name and a fallback list."""
     try:
         api_key = st.secrets["METERED_API_KEY"]
         app_name = "rashidi"
@@ -74,23 +71,27 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- 2-PAGE PDF REPORT GENERATOR ---
+# --- SAFE 2-PAGE PDF GENERATOR ---
 def generate_2page_pdf(operator_id, profile, actual_weight, data, img_frame):
     pdf = FPDF()
     
-    # --- PAGE 1: REBA POSTURE AUDIT ---
+    # PAGE 1: REBA AUDIT OVERLAY
     pdf.add_page()
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, f"REBA POSTURE AUDIT: {operator_id}", ln=True, align='C')
     pdf.ln(5)
 
-    if img_frame is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            cv2.imwrite(tmp.name, img_frame)
-            pdf.image(tmp.name, x=35, y=30, w=140)
-            os.unlink(tmp.name)
-            pdf.ln(100)
+    # Fallback image creation if frame is None
+    if img_frame is None:
+        img_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        cv2.putText(img_frame, "No Frame Captured", (150, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+        cv2.imwrite(tmp.name, img_frame)
+        pdf.image(tmp.name, x=35, y=30, w=140)
+        tmp_path = tmp.name
+
+    pdf.ln(100)
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(0, 8, "Posture Sub-Scores & Risk Evaluation", ln=True)
     pdf.set_font("Arial", size=10)
@@ -104,7 +105,7 @@ def generate_2page_pdf(operator_id, profile, actual_weight, data, img_frame):
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 1 of 2 - REBA Posture Risk Evaluation", align='L')
 
-    # --- PAGE 2: MANUAL LIFTING AUDIT ---
+    # PAGE 2: MANUAL WEIGHT LIFTING AUDIT
     pdf.add_page()
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 10, "MANUAL WEIGHT LIFTING AUDIT", ln=True)
@@ -145,7 +146,10 @@ def generate_2page_pdf(operator_id, profile, actual_weight, data, img_frame):
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 2 of 2 - Recommended Weight Limits Matrix", align='L')
 
-    return pdf.output(dest='S').encode('latin-1')
+    pdf_out = pdf.output(dest='S').encode('latin-1')
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+    return pdf_out
 
 # --- VIDEO PROCESSOR ---
 mp_pose = mp.solutions.pose
@@ -156,7 +160,7 @@ class REBAProcessor(VideoProcessorBase):
         self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
         self.latest_frame = None
         self.results_data = {
-            "trunk": 0, "neck": 0, "arm": 0, "total": 0,
+            "trunk": 1, "neck": 1, "arm": 1, "total": 3,
             "auto_zone": "Elbow to Knuckle", "auto_reach": "Close"
         }
 
@@ -170,24 +174,20 @@ class REBAProcessor(VideoProcessorBase):
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             
-            # 1. TRUNK ANGLE (Shoulder-Hip-Knee)
             shld = [lm[11].x * w, lm[11].y * h]
             hip = [lm[23].x * w, lm[23].y * h]
             knee = [lm[25].x * w, lm[25].y * h]
             t_angle = calculate_angle(shld, hip, knee)
             t_score = score_trunk(t_angle)
             
-            # 2. UPPER ARM ANGLE (Hip-Shoulder-Elbow)
             elbw = [lm[13].x * w, lm[13].y * h]
             a_angle = calculate_angle(hip, shld, elbw)
             a_score = score_upper_arm(a_angle)
             
-            # 3. NECK ANGLE (Nose-Shoulder-Hip)
             nose = [lm[0].x * w, lm[0].y * h]
             n_angle = calculate_angle(nose, shld, hip)
             n_score = score_neck(n_angle)
 
-            # 4. AUTO LIFTING ZONE AND REACH DETECTION
             wrst = [lm[15].x * w, lm[15].y * h]
             if wrst[1] < shld[1]:
                 detected_zone = "Above Shoulder"
@@ -203,20 +203,17 @@ class REBAProcessor(VideoProcessorBase):
             arm_reach_dist = abs(wrst[0] - shld[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
             
-            # Update UI Data
             self.results_data = {
                 "trunk": t_score, "neck": n_score, "arm": a_score, 
                 "total": t_score + n_score + a_score,
                 "auto_zone": detected_zone, "auto_reach": detected_reach
             }
             
-            # Visual Overlays
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             cv2.putText(img, f"REBA: {self.results_data['total']}", (10, 50), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
-            self.latest_frame = img
-            
+        self.latest_frame = img.copy()
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- STREAMLIT UI ---
@@ -247,10 +244,18 @@ if ctx.video_processor:
     st.caption(f"📍 Auto-Detected Lifting Zone: **{data.get('auto_zone', 'Elbow to Knuckle')} ({data.get('auto_reach', 'Close')})**")
 
 if st.button("📸 Generate 2-Page Audit Report"):
-    if ctx.video_processor and ctx.video_processor.latest_frame is not None:
-        pdf_bytes = generate_2page_pdf(
-            op_id, profile, actual_wt, 
-            ctx.video_processor.results_data, 
-            ctx.video_processor.latest_frame
-        )
-        st.download_button("📥 Download 2-Page PDF Report", pdf_bytes, f"Audit_{op_id}.pdf", mime="application/pdf")
+    if ctx.video_processor:
+        with st.spinner("Generating PDF Report..."):
+            pdf_bytes = generate_2page_pdf(
+                op_id, profile, actual_wt, 
+                ctx.video_processor.results_data, 
+                ctx.video_processor.latest_frame
+            )
+            st.download_button(
+                label="📥 Download 2-Page PDF Report", 
+                data=pdf_bytes, 
+                file_name=f"Audit_{op_id}.pdf", 
+                mime="application/pdf"
+            )
+    else:
+        st.error("Please start the camera stream before generating the report.")
