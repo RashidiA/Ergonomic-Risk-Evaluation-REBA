@@ -43,12 +43,21 @@ if "log_neck" not in st.session_state:
 if "log_upper_arm" not in st.session_state:
     st.session_state.log_upper_arm = []
 
-# --- ROBUST RTC STUN CONFIGURATION ---
+# --- ROBUST RTC STUN/TURN CONFIGURATION (Fixes Cloud WebRTC Timeouts) ---
 RTC_CONFIGURATION = RTCConfiguration({
     "iceServers": [
         {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302"]},
-        {"urls": ["stun:stun4.l.google.com:19302"]}
+        {"urls": ["stun:global.stun.twilio.com:3478"]},
+        {
+            "urls": ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443"],
+            "username": "openrelay",
+            "credential": "openrelay"
+        },
+        {
+            "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
+            "username": "openrelay",
+            "credential": "openrelay"
+        }
     ]
 })
 
@@ -308,7 +317,6 @@ class REBAProcessor(VideoProcessorBase):
             else:
                 detected_zone = "Below Mid-Leg"
 
-            # Horizontal Reach Auto-Detection
             arm_reach_dist = abs(wr[0] - sh[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
 
@@ -331,7 +339,7 @@ col1, col2 = st.columns([3, 2])
 with col1:
     st.subheader("📷 Live Assessment Stream")
     webrtc_streamer(
-        key="reba-processor-v3",
+        key="reba-processor-v4",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIGURATION,
         video_processor_factory=REBAProcessor,
@@ -340,7 +348,7 @@ with col1:
     )
 
 with col2:
-    # --- 1ST SELECTION: MINIMIZABLE LIFTING PARAMETERS ---
+    # 1ST SELECTION: MINIMIZABLE MANUAL WEIGHT LIFTING PARAMETERS
     with st.expander("🏋️ Manual Weight Lifting Parameters", expanded=True):
         op_id = st.text_input("Operator ID", value="OP-001")
         profile = st.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
