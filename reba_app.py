@@ -43,7 +43,7 @@ if "log_neck" not in st.session_state:
 if "log_upper_arm" not in st.session_state:
     st.session_state.log_upper_arm = []
 
-# --- ROBUST RTC STUN CONFIGURATION (Fixes Cloud WebRTC Timeouts) ---
+# --- ROBUST RTC STUN CONFIGURATION ---
 RTC_CONFIGURATION = RTCConfiguration({
     "iceServers": [
         {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]},
@@ -290,9 +290,32 @@ class REBAProcessor(VideoProcessorBase):
 
             reba = get_reba_score(t_s, n_s, l_s, u_s, lo_s, w_s)
 
+            # AUTOMATIC LIFTING ZONE AND REACH DETECTION
+            wrist_y = wr[1]
+            shoulder_y = sh[1]
+            elbow_y = el[1]
+            hip_y = hp[1]
+            knee_y = kn[1]
+
+            if wrist_y < shoulder_y:
+                detected_zone = "Above Shoulder"
+            elif shoulder_y <= wrist_y < elbow_y:
+                detected_zone = "Shoulder to Elbow"
+            elif elbow_y <= wrist_y < hip_y:
+                detected_zone = "Elbow to Knuckle"
+            elif hip_y <= wrist_y < knee_y:
+                detected_zone = "Knuckle to Mid-Leg"
+            else:
+                detected_zone = "Below Mid-Leg"
+
+            # Horizontal Reach Auto-Detection
+            arm_reach_dist = abs(wr[0] - sh[0])
+            detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
+
             st.session_state.result_queue.put({
                 "reba": reba, "trunk": t_s, "neck": n_s, 
-                "upper_arm": u_s, "lower_arm": lo_s, "legs": l_s
+                "upper_arm": u_s, "lower_arm": lo_s, "legs": l_s,
+                "auto_zone": detected_zone, "auto_reach": detected_reach
             })
 
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
@@ -308,7 +331,7 @@ col1, col2 = st.columns([3, 2])
 with col1:
     st.subheader("📷 Live Assessment Stream")
     webrtc_streamer(
-        key="reba-processor-v2",
+        key="reba-processor-v3",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIGURATION,
         video_processor_factory=REBAProcessor,
@@ -317,9 +340,19 @@ with col1:
     )
 
 with col2:
+    # --- 1ST SELECTION: MINIMIZABLE LIFTING PARAMETERS ---
+    with st.expander("🏋️ Manual Weight Lifting Parameters", expanded=True):
+        op_id = st.text_input("Operator ID", value="OP-001")
+        profile = st.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
+        actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
+
+    st.markdown("---")
     st.subheader("📊 Dynamic Metrics")
     
-    latest_data = {"reba": 1, "trunk": 1, "neck": 1, "upper_arm": 1, "lower_arm": 1, "legs": 1}
+    latest_data = {
+        "reba": 1, "trunk": 1, "neck": 1, "upper_arm": 1, 
+        "lower_arm": 1, "legs": 1, "auto_zone": "Elbow to Knuckle", "auto_reach": "Close"
+    }
     while not st.session_state.result_queue.empty():
         latest_data = st.session_state.result_queue.get()
         st.session_state.log_reba.append(latest_data["reba"])
@@ -347,18 +380,12 @@ with col2:
     s4.metric("Upper Arm", latest_data["upper_arm"])
     s5.metric("Lower Arm", latest_data["lower_arm"])
 
-    st.markdown("---")
-    st.subheader("🏋️ Manual Weight Lifting Parameters")
-    op_id = st.text_input("Operator ID", value="OP-001")
-    profile = st.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
-    actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
-    zone = st.selectbox("Lifting Zone", ["Above Shoulder", "Shoulder to Elbow", "Elbow to Knuckle", "Knuckle to Mid-Leg", "Below Mid-Leg"], index=2)
-    reach = st.radio("Reach Distance", ["Close", "Far"], horizontal=True)
+    st.caption(f"📍 Auto-Detected Lifting Zone: **{latest_data['auto_zone']} ({latest_data['auto_reach']})**")
 
     st.markdown("---")
     if st.button("Generate Full 2-Page Audit PDF"):
         pdf_data = generate_2page_pdf(
-            op_id, profile, actual_wt, zone, reach,
+            op_id, profile, actual_wt, latest_data['auto_zone'], latest_data['auto_reach'],
             st.session_state.log_reba, st.session_state.log_trunk,
             st.session_state.log_neck, st.session_state.log_upper_arm
         )
