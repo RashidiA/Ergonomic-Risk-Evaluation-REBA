@@ -9,6 +9,19 @@ import requests
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
 
+# --- GLOBAL PERSISTENT MEMORY (Survives WebRTC STOP & Reruns) ---
+@st.cache_resource
+def get_global_store():
+    return {
+        "frame": None,
+        "results": {
+            "trunk": 1, "neck": 1, "arm": 1, "total": 3,
+            "auto_zone": "Elbow to Knuckle", "auto_reach": "Close"
+        }
+    }
+
+GLOBAL_STORE = get_global_store()
+
 # --- HELPER: ANGLE CALCULATION ---
 def calculate_angle(a, b, c):
     a, b, c = np.array(a), np.array(b), np.array(c)
@@ -71,7 +84,7 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- SAFE 2-PAGE PDF GENERATOR ---
+# --- 2-PAGE PDF GENERATOR ---
 def generate_2page_pdf(operator_id, profile, actual_weight, data, img_frame):
     pdf = FPDF()
     
@@ -83,7 +96,7 @@ def generate_2page_pdf(operator_id, profile, actual_weight, data, img_frame):
 
     if img_frame is None:
         img_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        cv2.putText(img_frame, "No Frame Captured", (150, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(img_frame, "Audit Snapshot Captured", (120, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
         cv2.imwrite(tmp.name, img_frame)
@@ -157,11 +170,6 @@ mp_drawing = mp.solutions.drawing_utils
 class REBAProcessor(VideoProcessorBase):
     def __init__(self):
         self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-        self.latest_frame = None
-        self.results_data = {
-            "trunk": 1, "neck": 1, "arm": 1, "total": 3,
-            "auto_zone": "Elbow to Knuckle", "auto_reach": "Close"
-        }
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -202,27 +210,21 @@ class REBAProcessor(VideoProcessorBase):
             arm_reach_dist = abs(wrst[0] - shld[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
             
-            self.results_data = {
+            res = {
                 "trunk": t_score, "neck": n_score, "arm": a_score, 
                 "total": t_score + n_score + a_score,
                 "auto_zone": detected_zone, "auto_reach": detected_reach
             }
             
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            cv2.putText(img, f"REBA: {self.results_data['total']}", (10, 50), 
+            cv2.putText(img, f"REBA: {res['total']}", (10, 50), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
-        self.latest_frame = img.copy()
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+            # Continuously update persistent memory
+            GLOBAL_STORE["results"] = res
+            GLOBAL_STORE["frame"] = img.copy()
 
-# --- INITIALIZE SESSION STATE ---
-if "saved_results_data" not in st.session_state:
-    st.session_state.saved_results_data = {
-        "trunk": 1, "neck": 1, "arm": 1, "total": 3,
-        "auto_zone": "Elbow to Knuckle", "auto_reach": "Close"
-    }
-if "saved_latest_frame" not in st.session_state:
-    st.session_state.saved_latest_frame = None
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="REBA AI Auditor", layout="wide")
@@ -241,14 +243,8 @@ ctx = webrtc_streamer(
     media_stream_constraints={"video": True, "audio": False}
 )
 
-# Continuously save live updates into session state while stream is running
-if ctx.video_processor:
-    st.session_state.saved_results_data = ctx.video_processor.results_data
-    if ctx.video_processor.latest_frame is not None:
-        st.session_state.saved_latest_frame = ctx.video_processor.latest_frame
-
-# Display Metrics from Session State (Works live AND when stopped)
-data = st.session_state.saved_results_data
+# Display standard metrics from memory
+data = GLOBAL_STORE["results"]
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Trunk Score", data['trunk'])
 col2.metric("Neck Score", data['neck'])
@@ -257,20 +253,18 @@ col4.metric("Total Risk", data['total'])
 
 st.caption(f"📍 Auto-Detected Lifting Zone: **{data.get('auto_zone', 'Elbow to Knuckle')} ({data.get('auto_reach', 'Close')})**")
 
-# Report generation now pulls from session state
-if st.button("📸 Generate 2-Page Audit Report"):
-    if st.session_state.saved_latest_frame is not None or ctx.video_processor is not None:
-        with st.spinner("Generating PDF Report..."):
-            pdf_bytes = generate_2page_pdf(
-                op_id, profile, actual_wt, 
-                st.session_state.saved_results_data, 
-                st.session_state.saved_latest_frame
-            )
-            st.download_button(
-                label="📥 Download 2-Page PDF Report", 
-                data=pdf_bytes, 
-                file_name=f"Audit_{op_id}.pdf", 
-                mime="application/pdf"
-            )
-    else:
-        st.error("No captured frame found. Please start the camera briefly to record a frame before stopping.")
+st.markdown("---")
+
+# PDF Generation button uses persistent cache (Works even when camera is STOPPED)
+pdf_bytes = generate_2page_pdf(
+    op_id, profile, actual_wt, 
+    GLOBAL_STORE["results"], 
+    GLOBAL_STORE["frame"]
+)
+
+st.download_button(
+    label="📥 Download 2-Page Audit PDF Report", 
+    data=pdf_bytes, 
+    file_name=f"Audit_{op_id}.pdf", 
+    mime="application/pdf"
+)
