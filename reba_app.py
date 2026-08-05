@@ -8,10 +8,15 @@ from collections import Counter
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 from fpdf import FPDF
 
-# --- EXPLICIT MEDIAPIPE IMPORTS ---
+# --- SAFE MEDIAPIPE IMPORTS (Prevents AttributeError on Streamlit Cloud) ---
 import mediapipe as mp
-import mediapipe.solutions.pose as mp_pose
-import mediapipe.solutions.drawing_utils as mp_drawing
+
+try:
+    mp_pose = mp.solutions.pose
+    mp_drawing = mp.solutions.drawing_utils
+except AttributeError:
+    import mediapipe.python.solutions.pose as mp_pose
+    import mediapipe.python.solutions.drawing_utils as mp_drawing
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -34,7 +39,7 @@ def calculate_angle(a, b, c):
     angle = np.abs(radians * 180.0 / np.pi)
     return 360.0 - angle if angle > 180.0 else angle
 
-# --- REBA TABLES ---
+# --- REBA SCORING TABLES ---
 TABLE_A = [
     [[1, 2, 3, 4], [2, 3, 4, 5], [2, 4, 5, 6], [3, 4, 5, 6]],
     [[2, 3, 4, 5], [3, 4, 5, 6], [4, 5, 6, 7], [5, 6, 7, 8]],
@@ -113,7 +118,7 @@ def generate_pdf_report(logs):
     pdf.output(buffer)
     return buffer.getvalue()
 
-# --- WEBRTC PROCESSOR ---
+# --- WEBRTC PROCESSOR CLASS ---
 class REBAProcessor(VideoProcessorBase):
     def __init__(self):
         self.pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -141,7 +146,7 @@ class REBAProcessor(VideoProcessorBase):
             lower_a = calculate_angle(sh, el, wr)
             leg_a = calculate_angle(hp, kn, [kn[0], kn[1] + 100])
 
-            # Scores
+            # Sub-scores mapping
             t_s = 1 if trunk_a < 10 else (2 if trunk_a < 20 else 3)
             n_s = 1 if neck_a < 20 else 2
             l_s = 1 if leg_a < 30 else 2
@@ -151,25 +156,25 @@ class REBAProcessor(VideoProcessorBase):
 
             reba = get_reba_score(t_s, n_s, l_s, u_s, lo_s, w_s)
 
-            # Send metrics safely to Streamlit thread
+            # Thread-safe dispatch to main UI
             st.session_state.result_queue.put({
                 "reba": reba, "trunk": t_s, "neck": n_s, 
                 "upper_arm": u_s, "lower_arm": lo_s, "legs": l_s
             })
 
-            # Video Overlay
+            # Video Skeleton & Overlay
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             cv2.putText(img, f"REBA: {reba}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
 
         return frame.from_ndarray(img, format="bgr24")
 
-# --- UI LAYOUT ---
+# --- USER INTERFACE ---
 st.title("🦾 REBA Ergonomic Risk Evaluator")
 
 col1, col2 = st.columns([3, 2])
 
 with col1:
-    st.subheader("📷 Live Stream Assessment")
+    st.subheader("📷 Live Assessment Stream")
     webrtc_streamer(
         key="reba-processor",
         mode=WebRtcMode.SENDRECV,
@@ -179,9 +184,9 @@ with col1:
     )
 
 with col2:
-    st.subheader("📊 Live Posture Metrics")
+    st.subheader("📊 Dynamic Metrics")
     
-    # Retrieve latest calculation from queue
+    # Process queue updates
     latest_data = {"reba": 1, "trunk": 1, "neck": 1, "upper_arm": 1, "lower_arm": 1, "legs": 1}
     while not st.session_state.result_queue.empty():
         latest_data = st.session_state.result_queue.get()
@@ -190,7 +195,6 @@ with col2:
     reba_score = latest_data["reba"]
     risk, action = get_risk_level(reba_score)
 
-    # Metrics Grid
     m1, m2 = st.columns(2)
     m1.metric("REBA Score", f"{reba_score} / 12")
     m2.metric("Risk Level", risk)
@@ -198,7 +202,7 @@ with col2:
     st.info(action)
 
     st.markdown("---")
-    st.subheader("Sub-Scores")
+    st.subheader("Sub-Score Breakdown")
     s1, s2, s3 = st.columns(3)
     s1.metric("Trunk", latest_data["trunk"])
     s2.metric("Neck", latest_data["neck"])
@@ -209,7 +213,7 @@ with col2:
     s5.metric("Lower Arm", latest_data["lower_arm"])
 
     st.markdown("---")
-    st.subheader("📄 Report Export")
+    st.subheader("📄 Export Report")
     if st.button("Generate Summary PDF"):
         pdf_bytes = generate_pdf_report(st.session_state.log_reba)
         st.download_button(
