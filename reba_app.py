@@ -81,7 +81,6 @@ def generate_2page_pdf(operator_id, profile, actual_weight, data, img_frame):
     pdf.cell(0, 10, f"REBA POSTURE AUDIT: {operator_id}", ln=True, align='C')
     pdf.ln(5)
 
-    # Fallback image creation if frame is None
     if img_frame is None:
         img_frame = np.zeros((480, 640, 3), dtype=np.uint8)
         cv2.putText(img_frame, "No Frame Captured", (150, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
@@ -216,6 +215,15 @@ class REBAProcessor(VideoProcessorBase):
         self.latest_frame = img.copy()
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
+# --- INITIALIZE SESSION STATE ---
+if "saved_results_data" not in st.session_state:
+    st.session_state.saved_results_data = {
+        "trunk": 1, "neck": 1, "arm": 1, "total": 3,
+        "auto_zone": "Elbow to Knuckle", "auto_reach": "Close"
+    }
+if "saved_latest_frame" not in st.session_state:
+    st.session_state.saved_latest_frame = None
+
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="REBA AI Auditor", layout="wide")
 st.title("🛡️ Live REBA Auditor")
@@ -233,23 +241,30 @@ ctx = webrtc_streamer(
     media_stream_constraints={"video": True, "audio": False}
 )
 
+# Continuously save live updates into session state while stream is running
 if ctx.video_processor:
-    data = ctx.video_processor.results_data
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Trunk Score", data['trunk'])
-    col2.metric("Neck Score", data['neck'])
-    col3.metric("Arm Score", data['arm'])
-    col4.metric("Total Risk", data['total'])
-    
-    st.caption(f"📍 Auto-Detected Lifting Zone: **{data.get('auto_zone', 'Elbow to Knuckle')} ({data.get('auto_reach', 'Close')})**")
+    st.session_state.saved_results_data = ctx.video_processor.results_data
+    if ctx.video_processor.latest_frame is not None:
+        st.session_state.saved_latest_frame = ctx.video_processor.latest_frame
 
+# Display Metrics from Session State (Works live AND when stopped)
+data = st.session_state.saved_results_data
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Trunk Score", data['trunk'])
+col2.metric("Neck Score", data['neck'])
+col3.metric("Arm Score", data['arm'])
+col4.metric("Total Risk", data['total'])
+
+st.caption(f"📍 Auto-Detected Lifting Zone: **{data.get('auto_zone', 'Elbow to Knuckle')} ({data.get('auto_reach', 'Close')})**")
+
+# Report generation now pulls from session state
 if st.button("📸 Generate 2-Page Audit Report"):
-    if ctx.video_processor:
+    if st.session_state.saved_latest_frame is not None or ctx.video_processor is not None:
         with st.spinner("Generating PDF Report..."):
             pdf_bytes = generate_2page_pdf(
                 op_id, profile, actual_wt, 
-                ctx.video_processor.results_data, 
-                ctx.video_processor.latest_frame
+                st.session_state.saved_results_data, 
+                st.session_state.saved_latest_frame
             )
             st.download_button(
                 label="📥 Download 2-Page PDF Report", 
@@ -258,4 +273,4 @@ if st.button("📸 Generate 2-Page Audit Report"):
                 mime="application/pdf"
             )
     else:
-        st.error("Please start the camera stream before generating the report.")
+        st.error("No captured frame found. Please start the camera briefly to record a frame before stopping.")
