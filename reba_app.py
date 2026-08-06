@@ -9,6 +9,15 @@ import time
 import requests
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
+from ultralytics import YOLO
+
+# --- LOAD LIGHTWEIGHT YOLOv8 NANO MODEL ---
+@st.cache_resource
+def load_yolo():
+    # Downloads ~6MB yolov8n.pt on first run in Streamlit Cloud
+    return YOLO("yolov8n.pt")
+
+yolo_model = load_yolo()
 
 # --- GLOBAL PERSISTENT MEMORY ---
 @st.cache_resource
@@ -24,7 +33,8 @@ def get_global_store():
         },
         "results": {
             "auto_zone": "Elbow to Knuckle",
-            "auto_reach": "Close"
+            "auto_reach": "Close",
+            "detected_object": "None"
         }
     }
 
@@ -81,6 +91,9 @@ REBA_ACTION_TABLE = [
     ("11-15", "Very high", "Necessary urgent")
 ]
 
+# COCO Classes relevant for manual handling (backpack, handbag, suitcase, bottle, box, etc.)
+TARGET_OBJECT_CLASSES = [24, 26, 28, 39, 41, 63, 67] 
+
 # --- FIREWALL BYPASS (METERED.CA) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
@@ -103,7 +116,7 @@ def get_ice_servers():
 # --- PDF GENERATOR (STRICT 2-PAGE LAYOUT + YELLOW HIGHLIGHT) ---
 def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=False)  # Disable auto page breaks to prevent accidental page 3
+    pdf.set_auto_page_break(auto=False)  # Strict page bounding to prevent page 3 overflow
     
     # ==================== PAGE 1 ====================
     pdf.add_page()
@@ -141,7 +154,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         
     pdf.ln(4)
     
-    # Table 2: REBA Standard Action & Risk Table
+    # Table 2: REBA Standard Action & Risk Table (With Yellow Highlight)
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "REBA Standard Action & Risk Table", ln=True)
     
@@ -152,7 +165,6 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     
     pdf.set_font("Arial", size=9)
     for r_score, r_level, r_action in REBA_ACTION_TABLE:
-        # Check if score matches current range
         if r_score == "1":
             is_match = (score == 1)
         elif r_score == "2-3":
@@ -166,7 +178,6 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
         prefix = "-> " if is_match else ""
         
-        # Yellow Highlight on matching score row
         if is_match:
             pdf.set_fill_color(255, 255, 0)
             fill_flag = True
@@ -195,6 +206,8 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     res_data = store_data.get("results", {})
     auto_zone = res_data.get("auto_zone", "Elbow to Knuckle")
     auto_reach = res_data.get("auto_reach", "Close")
+    detected_obj = res_data.get("detected_object", "None")
+    
     max_limit = LIFTING_MATRIX[profile][auto_zone][auto_reach]
     status_str = "WITHIN SAFE ERGONOMIC LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE ERGONOMIC LIMIT"
     
@@ -202,13 +215,14 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.cell(0, 6, "Manual Material Handling Evaluation Summary", ln=True)
     pdf.set_font("Arial", size=9)
     pdf.cell(0, 5, f"Automatically Evaluated Zone: {auto_zone} ({auto_reach})", ln=True)
+    pdf.cell(0, 5, f"YOLO Detected Object: {detected_obj.title()}", ln=True)
     pdf.cell(0, 5, f"Actual Weight Lifted: {actual_weight:.1f} kg", ln=True)
     pdf.cell(0, 5, f"Max Recommended Limit: {max_limit:.1f} kg", ln=True)
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(0, 6, f"SAFETY STATUS: {status_str}", ln=True)
     pdf.ln(3)
     
-    # Table 3: Recommended Weight Matrix Reference with Yellow Highlight
+    # Table 3: Recommended Weight Matrix Reference (With Yellow Highlight)
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, f"Recommended Weight Matrix Reference ({profile})", ln=True)
     
@@ -224,14 +238,12 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         
         pdf.cell(65, 6, f"{prefix}{z_name}", border=1)
         
-        # Highlight Close column if active reach is Close & active zone
         if is_active_zone and auto_reach == "Close":
             pdf.set_fill_color(255, 255, 0)
             pdf.cell(60, 6, f"{vals['Close']:.1f} kg", border=1, align='C', fill=True)
         else:
             pdf.cell(60, 6, f"{vals['Close']:.1f} kg", border=1, align='C', fill=False)
 
-        # Highlight Far column if active reach is Far & active zone
         if is_active_zone and auto_reach == "Far":
             pdf.set_fill_color(255, 255, 0)
             pdf.cell(60, 6, f"{vals['Far']:.1f} kg", border=1, align='C', fill=True, ln=True)
@@ -274,7 +286,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     return bytes(pdf.output())
 
-# --- VIDEO PROCESSOR ---
+# --- HYBRID VIDEO PROCESSOR (MEDIAPIPE + YOLO FRAME SKIPPING) ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -288,6 +300,7 @@ class REBAProcessor(VideoProcessorBase):
             "Upper Arm": {"1-2": 0, "3-4": 0, "5+": 0}
         }
         self.total_frames = 0
+        self.last_detected_obj = "None"
 
     def recv(self, frame):
         if self.start_time is None:
@@ -296,28 +309,49 @@ class REBAProcessor(VideoProcessorBase):
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
         h, w, _ = img.shape
+        self.total_frames += 1
         
+        # --- 1. YOLO OBJECT DETECTION (SKIPPED TO RUN ONCE EVERY 10 FRAMES FOR SPEED) ---
+        if self.total_frames % 10 == 0:
+            try:
+                yolo_res = yolo_model(img, verbose=False, conf=0.35)[0]
+                detected_boxes = yolo_res.boxes
+                
+                found_obj = "None"
+                for box in detected_boxes:
+                    cls_id = int(box.cls[0])
+                    if cls_id in TARGET_OBJECT_CLASSES or cls_id != 0: # Exclude person (0)
+                        found_obj = yolo_model.names[cls_id]
+                        b = box.xyxy[0].cpu().numpy().astype(int)
+                        cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 255, 255), 2)
+                        cv2.putText(img, f"Object: {found_obj}", (b[0], max(20, b[1]-10)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                        break
+                self.last_detected_obj = found_obj
+            except Exception:
+                pass
+
+        # --- 2. MEDIAPIPE POSE EVALUATION (EVERY FRAME FOR SMOOTH TRACKING) ---
         results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             
-            # Scores
+            # Keypoints
             shld = [lm[11].x * w, lm[11].y * h]
             hip = [lm[23].x * w, lm[23].y * h]
             knee = [lm[25].x * w, lm[25].y * h]
-            t_score = score_trunk(calculate_angle(shld, hip, knee))
-            
             elbw = [lm[13].x * w, lm[13].y * h]
-            a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
-            
             nose = [lm[0].x * w, lm[0].y * h]
+            wrst = [lm[15].x * w, lm[15].y * h]
+
+            # REBA Scores
+            t_score = score_trunk(calculate_angle(shld, hip, knee))
+            a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
             n_score = score_neck(calculate_angle(nose, shld, hip))
-            
             total_reba = t_score + n_score + a_score
 
-            # Auto zone & reach
-            wrst = [lm[15].x * w, lm[15].y * h]
+            # Auto Zone Calculation
             if wrst[1] < shld[1]:
                 detected_zone = "Above Shoulder"
             elif shld[1] <= wrst[1] < elbw[1]:
@@ -333,7 +367,6 @@ class REBAProcessor(VideoProcessorBase):
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
 
             # Accumulate Duration Statistics
-            self.total_frames += 1
             for name, sc in [("Trunk", t_score), ("Neck", n_score), ("Upper Arm", a_score)]:
                 if sc <= 2:
                     self.counts[name]["1-2"] += 1
@@ -342,7 +375,7 @@ class REBAProcessor(VideoProcessorBase):
                 else:
                     self.counts[name]["5+"] += 1
 
-            # Compute %
+            # Compute Duration %
             tf = max(1, self.total_frames)
             breakdown_pct = {}
             for name in ["Trunk", "Neck", "Upper Arm"]:
@@ -354,26 +387,27 @@ class REBAProcessor(VideoProcessorBase):
 
             elapsed_dur = time.time() - self.start_time
 
-            # Update Persistent Memory
+            # Sync Global Store
             GLOBAL_STORE["total_duration"] = elapsed_dur
             GLOBAL_STORE["overall_score"] = total_reba
             GLOBAL_STORE["breakdown"] = breakdown_pct
             GLOBAL_STORE["results"] = {
                 "auto_zone": detected_zone,
-                "auto_reach": detected_reach
+                "auto_reach": detected_reach,
+                "detected_object": self.last_detected_obj
             }
             GLOBAL_STORE["frame"] = img.copy()
 
-            # Render Visual Overlay
+            # Visual Overlays
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            cv2.putText(img, f"REBA: {total_reba}", (10, 50), 
+            cv2.putText(img, f"REBA Score: {total_reba}", (10, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="REBA AI Auditor", layout="wide")
-st.title("🛡️ Live AR REBA & Manual Weight Lifting Analysis")
+st.set_page_config(page_title="REBA + YOLO AI Auditor", layout="wide")
+st.title("🛡️ Live REBA & Object-Aware Ergonomic Auditor")
 
 with st.sidebar:
     st.header("Settings & MMH Inputs")
@@ -382,24 +416,25 @@ with st.sidebar:
     actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
 
 ctx = webrtc_streamer(
-    key="reba-ai",
+    key="reba-yolo-ai",
     video_processor_factory=REBAProcessor,
     rtc_configuration={"iceServers": get_ice_servers()},
     media_stream_constraints={"video": True, "audio": False}
 )
 
-# Display Metrics
+# Live Metrics Display
 st.markdown("### Live / Last Captured Metrics")
-m_col1, m_col2 = st.columns(2)
+m_col1, m_col2, m_col3 = st.columns(3)
 m_col1.metric("Overall REBA Score", GLOBAL_STORE["overall_score"])
 m_col2.metric("Total Duration (s)", f"{GLOBAL_STORE['total_duration']:.1f}")
-
 res_data = GLOBAL_STORE["results"]
+m_col3.metric("YOLO Object Detected", res_data.get("detected_object", "None").title())
+
 st.caption(f"📍 Automatically Evaluated Zone: **{res_data.get('auto_zone', 'Elbow to Knuckle')} ({res_data.get('auto_reach', 'Close')})**")
 
 st.markdown("---")
 
-# Generate PDF with strict page bounding and yellow highlights
+# Download PDF Report
 pdf_bytes = generate_custom_pdf(
     op_id, profile, actual_wt, GLOBAL_STORE
 )
