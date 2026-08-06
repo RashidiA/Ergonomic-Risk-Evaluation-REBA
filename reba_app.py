@@ -14,7 +14,6 @@ from ultralytics import YOLO
 # --- LOAD LIGHTWEIGHT YOLOv8 NANO MODEL ---
 @st.cache_resource
 def load_yolo():
-    # Downloads ~6MB yolov8n.pt on first run in Streamlit Cloud
     return YOLO("yolov8n.pt")
 
 yolo_model = load_yolo()
@@ -65,6 +64,25 @@ def score_upper_arm(angle):
     if angle <= 90: return 3
     return 4
 
+# --- HELPER: BOUNDING BOX INTERSECTION (HAND VS OBJECT) ---
+def check_hand_object_intersection(hand_box, obj_box):
+    """
+    hand_box: (x1, y1, x2, y2) around wrist/hand
+    obj_box: (x1, y1, x2, y2) predicted by YOLO
+    """
+    hx1, hy1, hx2, hy2 = hand_box
+    ox1, oy1, ox2, oy2 = obj_box
+
+    # Calculate overlapping region
+    ix1 = max(hx1, ox1)
+    iy1 = max(hy1, oy1)
+    ix2 = min(hx2, ox2)
+    iy2 = min(hy2, oy2)
+
+    if ix1 < ix2 and iy1 < iy2:
+        return True
+    return False
+
 # --- MANUAL WEIGHT LIFTING REFERENCE MATRIX (kg) ---
 LIFTING_MATRIX = {
     "Male": {
@@ -91,9 +109,6 @@ REBA_ACTION_TABLE = [
     ("11-15", "Very high", "Necessary urgent")
 ]
 
-# COCO Classes relevant for manual handling (backpack, handbag, suitcase, bottle, box, etc.)
-TARGET_OBJECT_CLASSES = [24, 26, 28, 39, 41, 63, 67] 
-
 # --- FIREWALL BYPASS (METERED.CA) ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
@@ -113,15 +128,13 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- PDF GENERATOR (STRICT 2-PAGE LAYOUT + YELLOW HIGHLIGHT) ---
+# --- PDF GENERATOR (STRICT 2-PAGE LAYOUT) ---
 def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=False)  # Strict page bounding to prevent page 3 overflow
+    pdf.set_auto_page_break(auto=False)
     
-    # ==================== PAGE 1 ====================
+    # PAGE 1
     pdf.add_page()
-    
-    # Title & Subheader
     pdf.set_font("Arial", 'B', 15)
     pdf.cell(0, 8, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
     pdf.set_font("Arial", 'B', 10)
@@ -133,10 +146,8 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.cell(0, 7, f"Evaluated Overall REBA Score: {score}", ln=True, align='C')
     pdf.ln(3)
     
-    # Table 1: Posture Duration Analysis Breakdown
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "Posture Duration Analysis Breakdown", ln=True)
-    
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(50, 6, "Body Part", border=1, align='C')
     pdf.cell(45, 6, "Score 1-2 (%)", border=1, align='C')
@@ -154,10 +165,8 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         
     pdf.ln(4)
     
-    # Table 2: REBA Standard Action & Risk Table (With Yellow Highlight)
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "REBA Standard Action & Risk Table", ln=True)
-    
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(40, 6, "REBA Score", border=1, align='C')
     pdf.cell(60, 6, "Risk level", border=1, align='C')
@@ -165,24 +174,16 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     
     pdf.set_font("Arial", size=9)
     for r_score, r_level, r_action in REBA_ACTION_TABLE:
-        if r_score == "1":
-            is_match = (score == 1)
-        elif r_score == "2-3":
-            is_match = (score in [2, 3])
-        elif r_score == "4-7":
-            is_match = (4 <= score <= 7)
-        elif r_score == "8-10":
-            is_match = (8 <= score <= 10)
-        else:
-            is_match = (score >= 11)
+        if r_score == "1": is_match = (score == 1)
+        elif r_score == "2-3": is_match = (score in [2, 3])
+        elif r_score == "4-7": is_match = (4 <= score <= 7)
+        elif r_score == "8-10": is_match = (8 <= score <= 10)
+        else: is_match = (score >= 11)
 
         prefix = "-> " if is_match else ""
-        
-        if is_match:
+        fill_flag = is_match
+        if fill_flag:
             pdf.set_fill_color(255, 255, 0)
-            fill_flag = True
-        else:
-            fill_flag = False
 
         pdf.cell(40, 6, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
         pdf.cell(60, 6, r_level, border=1, fill=fill_flag)
@@ -192,17 +193,14 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 1 of 2 - REBA Posture Risk Evaluation", align='L')
 
-    # ==================== PAGE 2 ====================
+    # PAGE 2
     pdf.add_page()
-    
-    # Title & Subheader
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 5, f"Operator: {operator_id} | Evaluation Profile: {profile}", ln=True, align='C')
     pdf.ln(3)
     
-    # MMH Summary
     res_data = store_data.get("results", {})
     auto_zone = res_data.get("auto_zone", "Elbow to Knuckle")
     auto_reach = res_data.get("auto_reach", "Close")
@@ -215,17 +213,15 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.cell(0, 6, "Manual Material Handling Evaluation Summary", ln=True)
     pdf.set_font("Arial", size=9)
     pdf.cell(0, 5, f"Automatically Evaluated Zone: {auto_zone} ({auto_reach})", ln=True)
-    pdf.cell(0, 5, f"YOLO Detected Object: {detected_obj.title()}", ln=True)
+    pdf.cell(0, 5, f"YOLO Detected Object on Hand: {detected_obj.title()}", ln=True)
     pdf.cell(0, 5, f"Actual Weight Lifted: {actual_weight:.1f} kg", ln=True)
     pdf.cell(0, 5, f"Max Recommended Limit: {max_limit:.1f} kg", ln=True)
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(0, 6, f"SAFETY STATUS: {status_str}", ln=True)
     pdf.ln(3)
     
-    # Table 3: Recommended Weight Matrix Reference (With Yellow Highlight)
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, f"Recommended Weight Matrix Reference ({profile})", ln=True)
-    
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(65, 6, "Height Zone", border=1)
     pdf.cell(60, 6, "Close Reach Limit (kg)", border=1, align='C')
@@ -235,7 +231,6 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     for z_name, vals in LIFTING_MATRIX[profile].items():
         is_active_zone = (z_name == auto_zone)
         prefix = "-> " if is_active_zone else ""
-        
         pdf.cell(65, 6, f"{prefix}{z_name}", border=1)
         
         if is_active_zone and auto_reach == "Close":
@@ -252,7 +247,6 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         
     pdf.ln(3)
     
-    # Diagram & Recommendations Section
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "Ergonomic Lifting Reference Diagram", ln=True)
     
@@ -286,7 +280,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR (MEDIAPIPE + YOLO FRAME SKIPPING) ---
+# --- HYBRID VIDEO PROCESSOR (MEDIAPIPE POSE + OBJECT ON HAND DYNAMICS) ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -300,7 +294,8 @@ class REBAProcessor(VideoProcessorBase):
             "Upper Arm": {"1-2": 0, "3-4": 0, "5+": 0}
         }
         self.total_frames = 0
-        self.last_detected_obj = "None"
+        self.last_detected_obj = "None (Hands Free)"
+        self.hand_box = None  # (x1, y1, x2, y2) around wrists
 
     def recv(self, frame):
         if self.start_time is None:
@@ -310,28 +305,8 @@ class REBAProcessor(VideoProcessorBase):
         img = cv2.flip(img, 1)
         h, w, _ = img.shape
         self.total_frames += 1
-        
-        # --- 1. YOLO OBJECT DETECTION (SKIPPED TO RUN ONCE EVERY 10 FRAMES FOR SPEED) ---
-        if self.total_frames % 10 == 0:
-            try:
-                yolo_res = yolo_model(img, verbose=False, conf=0.35)[0]
-                detected_boxes = yolo_res.boxes
-                
-                found_obj = "None"
-                for box in detected_boxes:
-                    cls_id = int(box.cls[0])
-                    if cls_id in TARGET_OBJECT_CLASSES or cls_id != 0: # Exclude person (0)
-                        found_obj = yolo_model.names[cls_id]
-                        b = box.xyxy[0].cpu().numpy().astype(int)
-                        cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 255, 255), 2)
-                        cv2.putText(img, f"Object: {found_obj}", (b[0], max(20, b[1]-10)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                        break
-                self.last_detected_obj = found_obj
-            except Exception:
-                pass
 
-        # --- 2. MEDIAPIPE POSE EVALUATION (EVERY FRAME FOR SMOOTH TRACKING) ---
+        # --- 1. MEDIAPIPE POSE & HAND TRACKING ---
         results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         
         if results.pose_landmarks:
@@ -343,51 +318,93 @@ class REBAProcessor(VideoProcessorBase):
             knee = [lm[25].x * w, lm[25].y * h]
             elbw = [lm[13].x * w, lm[13].y * h]
             nose = [lm[0].x * w, lm[0].y * h]
-            wrst = [lm[15].x * w, lm[15].y * h]
+            
+            # Wrists
+            l_wrist = [lm[15].x * w, lm[15].y * h]
+            r_wrist = [lm[16].x * w, lm[16].y * h]
 
-            # REBA Scores
+            # Dynamic Hand Region (ROI around hands/wrists)
+            margin = int(w * 0.12)  # 12% frame margin around wrists
+            hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
+            hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
+            hx2 = int(min(w, max(l_wrist[0], r_wrist[0]) + margin))
+            hy2 = int(min(h, max(l_wrist[1], r_wrist[1]) + margin))
+            self.hand_box = (hx1, hy1, hx2, hy2)
+
+            # Draw Hand Detection Region
+            cv2.rectangle(img, (hx1, hy1), (hx2, hy2), (255, 105, 180), 1, cv2.LINE_AA)
+            cv2.putText(img, "Hand Tracking Region", (hx1, max(15, hy1 - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 105, 180), 1)
+
+            # REBA Posture Calculation
             t_score = score_trunk(calculate_angle(shld, hip, knee))
             a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
             n_score = score_neck(calculate_angle(nose, shld, hip))
             total_reba = t_score + n_score + a_score
 
-            # Auto Zone Calculation
-            if wrst[1] < shld[1]:
+            # Auto Zone & Reach
+            avg_wrist_y = (l_wrist[1] + r_wrist[1]) / 2.0
+            if avg_wrist_y < shld[1]:
                 detected_zone = "Above Shoulder"
-            elif shld[1] <= wrst[1] < elbw[1]:
+            elif shld[1] <= avg_wrist_y < elbw[1]:
                 detected_zone = "Shoulder to Elbow"
-            elif elbw[1] <= wrst[1] < hip[1]:
+            elif elbw[1] <= avg_wrist_y < hip[1]:
                 detected_zone = "Elbow to Knuckle"
-            elif hip[1] <= wrst[1] < knee[1]:
+            elif hip[1] <= avg_wrist_y < knee[1]:
                 detected_zone = "Knuckle to Mid-Leg"
             else:
                 detected_zone = "Below Mid-Leg"
 
-            arm_reach_dist = abs(wrst[0] - shld[0])
+            arm_reach_dist = abs(l_wrist[0] - shld[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
 
-            # Accumulate Duration Statistics
-            for name, sc in [("Trunk", t_score), ("Neck", n_score), ("Upper Arm", a_score)]:
-                if sc <= 2:
-                    self.counts[name]["1-2"] += 1
-                elif sc <= 4:
-                    self.counts[name]["3-4"] += 1
-                else:
-                    self.counts[name]["5+"] += 1
+            # --- 2. YOLO OBJECT-ON-HAND DETECTION (EVERY 10 FRAMES) ---
+            if self.total_frames % 10 == 0:
+                try:
+                    yolo_res = yolo_model(img, verbose=False, conf=0.30)[0]
+                    found_obj_on_hand = "None (Hands Free)"
+                    
+                    for box in yolo_res.boxes:
+                        cls_id = int(box.cls[0])
+                        # Ignore person class (0)
+                        if cls_id != 0:
+                            b = box.xyxy[0].cpu().numpy().astype(int)
+                            obj_box = (b[0], b[1], b[2], b[3])
+                            
+                            # Check if YOLO object overlaps with MediaPipe Hand Region
+                            if self.hand_box and check_hand_object_intersection(self.hand_box, obj_box):
+                                obj_name = yolo_model.names[cls_id]
+                                found_obj_on_hand = f"{obj_name} (Lifted)"
+                                
+                                # Highlight object on hand in RED
+                                cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 3)
+                                cv2.putText(img, f"HEAVY LOAD: {obj_name.upper()}", 
+                                            (b[0], max(20, b[1]-10)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+                                break
 
-            # Compute Duration %
+                    self.last_detected_obj = found_obj_on_hand
+                except Exception:
+                    pass
+
+            # Accumulate Statistics
+            for name, sc in [("Trunk", t_score), ("Neck", n_score), ("Upper Arm", a_score)]:
+                if sc <= 2: self.counts[name]["1-2"] += 1
+                elif sc <= 4: self.counts[name]["3-4"] += 1
+                else: self.counts[name]["5+"] += 1
+
             tf = max(1, self.total_frames)
-            breakdown_pct = {}
-            for name in ["Trunk", "Neck", "Upper Arm"]:
-                breakdown_pct[name] = {
+            breakdown_pct = {
+                name: {
                     "1-2": (self.counts[name]["1-2"] / tf) * 100.0,
                     "3-4": (self.counts[name]["3-4"] / tf) * 100.0,
                     "5+": (self.counts[name]["5+"] / tf) * 100.0
-                }
+                } for name in ["Trunk", "Neck", "Upper Arm"]
+            }
 
             elapsed_dur = time.time() - self.start_time
 
-            # Sync Global Store
+            # Sync Store
             GLOBAL_STORE["total_duration"] = elapsed_dur
             GLOBAL_STORE["overall_score"] = total_reba
             GLOBAL_STORE["breakdown"] = breakdown_pct
@@ -398,7 +415,7 @@ class REBAProcessor(VideoProcessorBase):
             }
             GLOBAL_STORE["frame"] = img.copy()
 
-            # Visual Overlays
+            # Skeleton & REBA Score Overlay
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             cv2.putText(img, f"REBA Score: {total_reba}", (10, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
@@ -422,22 +439,19 @@ ctx = webrtc_streamer(
     media_stream_constraints={"video": True, "audio": False}
 )
 
-# Live Metrics Display
 st.markdown("### Live / Last Captured Metrics")
 m_col1, m_col2, m_col3 = st.columns(3)
 m_col1.metric("Overall REBA Score", GLOBAL_STORE["overall_score"])
 m_col2.metric("Total Duration (s)", f"{GLOBAL_STORE['total_duration']:.1f}")
 res_data = GLOBAL_STORE["results"]
-m_col3.metric("YOLO Object Detected", res_data.get("detected_object", "None").title())
+m_col3.metric("Object on Hand", res_data.get("detected_object", "None").title())
 
 st.caption(f"📍 Automatically Evaluated Zone: **{res_data.get('auto_zone', 'Elbow to Knuckle')} ({res_data.get('auto_reach', 'Close')})**")
 
 st.markdown("---")
 
 # Download PDF Report
-pdf_bytes = generate_custom_pdf(
-    op_id, profile, actual_wt, GLOBAL_STORE
-)
+pdf_bytes = generate_custom_pdf(op_id, profile, actual_wt, GLOBAL_STORE)
 
 st.download_button(
     label="📥 Download REBA Lifting Audit PDF Report", 
