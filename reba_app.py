@@ -36,6 +36,21 @@ def get_global_store():
             "auto_zone": "Elbow to Knuckle",
             "auto_reach": "Close",
             "detected_object": "None"
+        },
+        "niosh": {
+            "h_cm": 30.0,
+            "v_cm": 75.0,
+            "d_cm": 25.0,
+            "angle_deg": 0.0,
+            "hm": 0.83,
+            "vm": 1.00,
+            "dm": 1.00,
+            "am": 1.00,
+            "fm": 0.95,
+            "cm": 1.00,
+            "rwl": 18.2,
+            "li": 0.44,
+            "status": "SAFE (LI <= 1.0)"
         }
     }
 
@@ -67,28 +82,55 @@ def score_upper_arm(angle):
     return 4
 
 def score_legs(knee_angle):
-    # REBA Leg Scoring (Knee Flexion)
     flexion = abs(180.0 - knee_angle)
     if flexion <= 30: return 1
     if flexion <= 60: return 2
     return 3
 
 def score_wrists(wrist_angle):
-    # REBA Wrist Scoring (Flexion/Extension)
     dev = abs(180.0 - wrist_angle)
     if dev <= 15: return 1
     return 2
+
+# --- NIOSH CALCULATOR ENGINE ---
+def compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_weight, fm=0.95, cm=1.00):
+    lc = 23.0  # Load Constant in kg
+    
+    # 1. Horizontal Multiplier (HM = 25 / H)
+    h_cm = max(25.0, min(63.0, h_cm))
+    hm = 25.0 / h_cm
+    
+    # 2. Vertical Multiplier (VM = 1 - 0.003 * |V - 75|)
+    v_cm = max(0.0, min(175.0, v_cm))
+    vm = max(0.0, 1.0 - (0.003 * abs(v_cm - 75.0)))
+    
+    # 3. Distance Multiplier (DM = 0.82 + 4.5 / D)
+    d_cm = max(25.0, min(175.0, d_cm))
+    dm = 0.82 + (4.5 / d_cm)
+    
+    # 4. Asymmetric Multiplier (AM = 1 - 0.0032 * A)
+    angle_deg = max(0.0, min(135.0, angle_deg))
+    am = max(0.0, 1.0 - (0.0032 * angle_deg))
+    
+    # Recommended Weight Limit
+    rwl = lc * hm * vm * dm * am * fm * cm
+    
+    # Lifting Index
+    li = actual_weight / max(0.1, rwl)
+    status = "SAFE (LI <= 1.0)" if li <= 1.0 else "UNSAFE / HIGH RISK (LI > 1.0)"
+    
+    return {
+        "h_cm": h_cm, "v_cm": v_cm, "d_cm": d_cm, "angle_deg": angle_deg,
+        "hm": hm, "vm": vm, "dm": dm, "am": am, "fm": fm, "cm": cm,
+        "rwl": rwl, "li": li, "status": status
+    }
 
 # --- HELPER: BOUNDING BOX INTERSECTION ---
 def check_hand_object_intersection(hand_box, obj_box):
     hx1, hy1, hx2, hy2 = hand_box
     ox1, oy1, ox2, oy2 = obj_box
-
-    ix1 = max(hx1, ox1)
-    iy1 = max(hy1, oy1)
-    ix2 = min(hx2, ox2)
-    iy2 = min(hy2, oy2)
-
+    ix1, iy1 = max(hx1, ox1), max(hy1, oy1)
+    ix2, iy2 = min(hx2, ox2), min(hy2, oy2)
     return (ix1 < ix2) and (iy1 < iy2)
 
 # --- MANUAL WEIGHT LIFTING MATRIX ---
@@ -136,12 +178,12 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- PDF GENERATOR (FULL BODY METRICS) ---
+# --- 3-PAGE PDF GENERATOR ---
 def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=False)
     
-    # PAGE 1
+    # PAGE 1: REBA POSTURE AUDIT
     pdf.add_page()
     pdf.set_font("Arial", 'B', 15)
     pdf.cell(0, 8, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
@@ -190,8 +232,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
         prefix = "-> " if is_match else ""
         fill_flag = is_match
-        if fill_flag:
-            pdf.set_fill_color(255, 255, 0)
+        if fill_flag: pdf.set_fill_color(255, 255, 0)
 
         pdf.cell(40, 5, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
         pdf.cell(60, 5, r_level, border=1, fill=fill_flag)
@@ -199,9 +240,9 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         
     pdf.set_y(-15)
     pdf.set_font("Arial", 'I', 8)
-    pdf.cell(0, 10, "Page 1 of 2 - REBA Posture Risk Evaluation", align='L')
+    pdf.cell(0, 10, "Page 1 of 3 - REBA Posture Risk Evaluation", align='L')
 
-    # PAGE 2
+    # PAGE 2: MANUAL MATERIAL HANDLING AUDIT
     pdf.add_page()
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
@@ -284,11 +325,68 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     pdf.set_y(-15)
     pdf.set_font("Arial", 'I', 8)
-    pdf.cell(0, 10, "Page 2 of 2 - Recommended Weight Limits Matrix Standard", align='L')
+    pdf.cell(0, 10, "Page 2 of 3 - Recommended Weight Limits Matrix Standard", align='L')
+
+    # PAGE 3: NIOSH LIFTING EQUATION AUDIT
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 8, "NIOSH LIFTING EQUATION ASSESSMENT", ln=True, align='C')
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 5, f"Operator: {operator_id} | Trigger Source: YOLO Object Detection", ln=True, align='C')
+    pdf.ln(3)
+    
+    nd = store_data.get("niosh", {})
+    obj_name_str = res_data.get("detected_object", "None")
+    
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "1. Object & Load Condition", ln=True)
+    pdf.set_font("Arial", size=9)
+    pdf.cell(0, 5, f"YOLO Object Detected: {obj_name_str.title()}", ln=True)
+    pdf.cell(0, 5, f"Actual Object Weight: {actual_weight:.1f} kg", ln=True)
+    pdf.ln(2)
+
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "2. NIOSH Multipliers & Spatial Geometry", ln=True)
+    
+    pdf.set_font("Arial", 'B', 8.5)
+    pdf.cell(60, 5, "Parameter / Multiplier", border=1)
+    pdf.cell(40, 5, "Measured Value", border=1, align='C')
+    pdf.cell(40, 5, "Multiplier Factor", border=1, align='C')
+    pdf.cell(45, 5, "Formula / Standard", border=1, align='C', ln=True)
+    
+    pdf.set_font("Arial", size=8.5)
+    pdf.cell(60, 5, "Load Constant (LC)", border=1); pdf.cell(40, 5, "23.0 kg", border=1, align='C'); pdf.cell(40, 5, "1.00", border=1, align='C'); pdf.cell(45, 5, "Baseline Load", border=1, align='C', ln=True)
+    pdf.cell(60, 5, "Horizontal Multiplier (HM)", border=1); pdf.cell(40, 5, f"{nd['h_cm']:.1f} cm", border=1, align='C'); pdf.cell(40, 5, f"{nd['hm']:.2f}", border=1, align='C'); pdf.cell(45, 5, "25 / H", border=1, align='C', ln=True)
+    pdf.cell(60, 5, "Vertical Multiplier (VM)", border=1); pdf.cell(40, 5, f"{nd['v_cm']:.1f} cm", border=1, align='C'); pdf.cell(40, 5, f"{nd['vm']:.2f}", border=1, align='C'); pdf.cell(45, 5, "1 - 0.003|V - 75|", border=1, align='C', ln=True)
+    pdf.cell(60, 5, "Distance Multiplier (DM)", border=1); pdf.cell(40, 5, f"{nd['d_cm']:.1f} cm", border=1, align='C'); pdf.cell(40, 5, f"{nd['dm']:.2f}", border=1, align='C'); pdf.cell(45, 5, "0.82 + (4.5 / D)", border=1, align='C', ln=True)
+    pdf.cell(60, 5, "Asymmetric Multiplier (AM)", border=1); pdf.cell(40, 5, f"{nd['angle_deg']:.1f} deg", border=1, align='C'); pdf.cell(40, 5, f"{nd['am']:.2f}", border=1, align='C'); pdf.cell(45, 5, "1 - 0.0032(A)", border=1, align='C', ln=True)
+    pdf.cell(60, 5, "Frequency Multiplier (FM)", border=1); pdf.cell(40, 5, "Moderate", border=1, align='C'); pdf.cell(40, 5, f"{nd['fm']:.2f}", border=1, align='C'); pdf.cell(45, 5, "Lifting Table", border=1, align='C', ln=True)
+    pdf.cell(60, 5, "Coupling Multiplier (CM)", border=1); pdf.cell(40, 5, "Good", border=1, align='C'); pdf.cell(40, 5, f"{nd['cm']:.2f}", border=1, align='C'); pdf.cell(45, 5, "Container Grip", border=1, align='C', ln=True)
+
+    pdf.ln(3)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "3. NIOSH Final Safety Assessment", ln=True)
+    
+    pdf.set_font("Arial", size=9)
+    pdf.cell(0, 5, f"Recommended Weight Limit (RWL): {nd['rwl']:.2f} kg", ln=True)
+    pdf.cell(0, 5, f"Lifting Index (LI = Actual Weight / RWL): {nd['li']:.2f}", ln=True)
+    
+    fill_color = (144, 238, 144) if nd['li'] <= 1.0 else (255, 182, 193)
+    pdf.set_fill_color(*fill_color)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 7, f"NIOSH EVALUATION: {nd['status']}", border=1, align='C', fill=True, ln=True)
+    pdf.ln(3)
+
+    pdf.set_font("Arial", size=8.5)
+    pdf.multi_cell(0, 4.5, "Engineering Notes:\n- LI <= 1.0 indicates task is safe for most healthy industrial workers.\n- LI > 1.0 indicates increased risk of lower back strain; ergonomic redesign or mechanical lift assist is recommended.")
+
+    pdf.set_y(-15)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.cell(0, 10, "Page 3 of 3 - NIOSH Lifting Equation Assessment Report", align='L')
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR WITH FULL-BODY TRACKING ---
+# --- HYBRID VIDEO PROCESSOR WITH NIOSH INTEGRATION ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -308,36 +406,30 @@ class REBAProcessor(VideoProcessorBase):
         self.hand_box = None
 
     def recv(self, frame):
-        if self.start_time is None:
-            self.start_time = time.time()
+        if self.start_time is None: self.start_time = time.time()
 
         img = frame.to_ndarray(format="bgr24")
         img = cv2.flip(img, 1)
         h, w, _ = img.shape
         self.total_frames += 1
 
-        # --- 1. FULL-BODY POSE ESTIMATION ---
         results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             
-            # Keypoints (Upper Body)
             shld = [lm[11].x * w, lm[11].y * h]
             hip = [lm[23].x * w, lm[23].y * h]
             elbw = [lm[13].x * w, lm[13].y * h]
             nose = [lm[0].x * w, lm[0].y * h]
             
-            # Wrists & Index Fingers
             l_wrist = [lm[15].x * w, lm[15].y * h]
             r_wrist = [lm[16].x * w, lm[16].y * h]
             l_index = [lm[19].x * w, lm[19].y * h]
 
-            # Lower Body Keypoints (Legs)
             knee = [lm[25].x * w, lm[25].y * h]
             ankle = [lm[27].x * w, lm[27].y * h]
 
-            # Dynamic Hand Region (ROI around hands/wrists)
             margin = int(w * 0.12)
             hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
             hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
@@ -347,39 +439,35 @@ class REBAProcessor(VideoProcessorBase):
 
             cv2.rectangle(img, (hx1, hy1), (hx2, hy2), (255, 105, 180), 1, cv2.LINE_AA)
 
-            # --- FULL REBA ANGLE CALCULATIONS ---
+            # REBA Angles
             t_score = score_trunk(calculate_angle(shld, hip, knee))
             a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
             n_score = score_neck(calculate_angle(nose, shld, hip))
-            
-            # Leg Flexion Angle (Hip -> Knee -> Ankle)
-            knee_angle = calculate_angle(hip, knee, ankle)
-            l_score = score_legs(knee_angle)
+            l_score = score_legs(calculate_angle(hip, knee, ankle))
+            w_score = score_wrists(calculate_angle(elbw, l_wrist, l_index))
 
-            # Wrist Flexion Angle (Elbow -> Wrist -> Index Finger)
-            wrist_angle = calculate_angle(elbw, l_wrist, l_index)
-            w_score = score_wrists(wrist_angle)
-
-            # Total REBA Score (Trunk + Neck + Upper Arm + Legs + Wrists)
             total_reba = t_score + n_score + a_score + l_score + w_score
 
-            # Auto Height Zone & Reach
             avg_wrist_y = (l_wrist[1] + r_wrist[1]) / 2.0
-            if avg_wrist_y < shld[1]:
-                detected_zone = "Above Shoulder"
-            elif shld[1] <= avg_wrist_y < elbw[1]:
-                detected_zone = "Shoulder to Elbow"
-            elif elbw[1] <= avg_wrist_y < hip[1]:
-                detected_zone = "Elbow to Knuckle"
-            elif hip[1] <= avg_wrist_y < knee[1]:
-                detected_zone = "Knuckle to Mid-Leg"
-            else:
-                detected_zone = "Below Mid-Leg"
+            if avg_wrist_y < shld[1]: detected_zone = "Above Shoulder"
+            elif shld[1] <= avg_wrist_y < elbw[1]: detected_zone = "Shoulder to Elbow"
+            elif elbw[1] <= avg_wrist_y < hip[1]: detected_zone = "Elbow to Knuckle"
+            elif hip[1] <= avg_wrist_y < knee[1]: detected_zone = "Knuckle to Mid-Leg"
+            else: detected_zone = "Below Mid-Leg"
 
             arm_reach_dist = abs(l_wrist[0] - shld[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
 
-            # --- 2. YOLO OBJECT ON HAND DETECTION (EVERY 10 FRAMES) ---
+            # --- DYNAMIC NIOSH PARAMETER CALCULATIONS ---
+            # Scale px to cm assuming average shoulder-to-hip height = 50cm
+            scale_px_to_cm = 50.0 / max(1.0, abs(hip[1] - shld[1]))
+            
+            h_cm = abs(l_wrist[0] - ankle[0]) * scale_px_to_cm
+            v_cm = abs(ankle[1] - l_wrist[1]) * scale_px_to_cm
+            d_cm = abs(shld[1] - l_wrist[1]) * scale_px_to_cm
+            angle_deg = abs(180.0 - calculate_angle(shld, hip, knee))
+
+            # --- YOLO OBJECT DETECT & NIOSH TRIGGER (EVERY 10 FRAMES) ---
             if self.total_frames % 10 == 0:
                 try:
                     yolo_res = yolo_model(img, verbose=False, conf=0.30)[0]
@@ -387,7 +475,7 @@ class REBAProcessor(VideoProcessorBase):
                     
                     for box in yolo_res.boxes:
                         cls_id = int(box.cls[0])
-                        if cls_id != 0:  # Ignore person class
+                        if cls_id != 0:
                             b = box.xyxy[0].cpu().numpy().astype(int)
                             obj_box = (b[0], b[1], b[2], b[3])
                             
@@ -395,17 +483,21 @@ class REBAProcessor(VideoProcessorBase):
                                 obj_name = yolo_model.names[cls_id]
                                 found_obj_on_hand = f"{obj_name} (Lifted)"
                                 
+                                # TRIGGER NIOSH CALCULATION ON DETECTED OBJECT
+                                actual_wt = GLOBAL_STORE.get("actual_weight", 8.0)
+                                niosh_res = compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_wt)
+                                GLOBAL_STORE["niosh"] = niosh_res
+
                                 cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 3)
-                                cv2.putText(img, f"HEAVY LOAD: {obj_name.upper()}", 
+                                cv2.putText(img, f"LOAD DETECTED: {obj_name.upper()} | RWL: {niosh_res['rwl']:.1f}kg", 
                                             (b[0], max(20, b[1]-10)),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 255), 2)
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
                                 break
 
                     self.last_detected_obj = found_obj_on_hand
                 except Exception:
                     pass
 
-            # Accumulate Statistics for All Body Parts
             for name, sc in [("Trunk", t_score), ("Neck", n_score), ("Upper Arm", a_score), 
                              ("Legs", l_score), ("Wrists", w_score)]:
                 if sc <= 2: self.counts[name]["1-2"] += 1
@@ -421,9 +513,7 @@ class REBAProcessor(VideoProcessorBase):
                 } for name in ["Trunk", "Neck", "Upper Arm", "Legs", "Wrists"]
             }
 
-            elapsed_dur = time.time() - self.start_time
-
-            GLOBAL_STORE["total_duration"] = elapsed_dur
+            GLOBAL_STORE["total_duration"] = time.time() - self.start_time
             GLOBAL_STORE["overall_score"] = total_reba
             GLOBAL_STORE["breakdown"] = breakdown_pct
             GLOBAL_STORE["results"] = {
@@ -433,46 +523,49 @@ class REBAProcessor(VideoProcessorBase):
             }
             GLOBAL_STORE["frame"] = img.copy()
 
-            # Skeleton & REBA Overlay
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            cv2.putText(img, f"Full REBA Score: {total_reba}", (10, 40), 
+            cv2.putText(img, f"REBA Score: {total_reba}", (10, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Full REBA & Object-Aware AI Auditor", layout="wide")
-st.title("🛡️ Full-Body REBA & MMH Ergonomic Auditor")
+st.set_page_config(page_title="REBA + NIOSH AI Auditor", layout="wide")
+st.title("🛡️ Full REBA & NIOSH Lifting Equation Auditor")
 
 with st.sidebar:
     st.header("Settings & MMH Inputs")
     op_id = st.text_input("Operator ID", "OP-001")
     profile = st.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
     actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
+    GLOBAL_STORE["actual_weight"] = actual_wt
 
 ctx = webrtc_streamer(
-    key="full-reba-ai",
+    key="reba-niosh-ai",
     video_processor_factory=REBAProcessor,
     rtc_configuration={"iceServers": get_ice_servers()},
     media_stream_constraints={"video": True, "audio": False}
 )
 
 st.markdown("### Live / Last Captured Metrics")
-m_col1, m_col2, m_col3 = st.columns(3)
+m_col1, m_col2, m_col3, m_col4 = st.columns(4)
 m_col1.metric("Overall REBA Score", GLOBAL_STORE["overall_score"])
 m_col2.metric("Total Duration (s)", f"{GLOBAL_STORE['total_duration']:.1f}")
 res_data = GLOBAL_STORE["results"]
 m_col3.metric("Object on Hand", res_data.get("detected_object", "None").title())
 
-st.caption(f"📍 Automatically Evaluated Zone: **{res_data.get('auto_zone', 'Elbow to Knuckle')} ({res_data.get('auto_reach', 'Close')})**")
+niosh_data = GLOBAL_STORE.get("niosh", {})
+m_col4.metric("NIOSH RWL / LI", f"{niosh_data.get('rwl', 0.0):.1f} kg (LI: {niosh_data.get('li', 0.0):.2f})")
+
+st.caption(f"📍 Automatically Evaluated Zone: **{res_data.get('auto_zone', 'Elbow to Knuckle')} ({res_data.get('auto_reach', 'Close')})** | NIOSH Status: **{niosh_data.get('status', 'Pending Object Detection')}**")
 
 st.markdown("---")
 
 pdf_bytes = generate_custom_pdf(op_id, profile, actual_wt, GLOBAL_STORE)
 
 st.download_button(
-    label="📥 Download Full REBA Audit PDF Report", 
+    label="📥 Download 3-Page REBA + NIOSH Audit PDF Report", 
     data=pdf_bytes, 
-    file_name=f"Full_REBA_Audit_{op_id}.pdf", 
+    file_name=f"REBA_NIOSH_Audit_{op_id}.pdf", 
     mime="application/pdf"
 )
