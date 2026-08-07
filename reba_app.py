@@ -531,7 +531,7 @@ class REBAProcessor(VideoProcessorBase):
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="REBA + NIOSH AI Auditor", layout="wide")
-st.title("🛡️ Full REBA & NIOSH Lifting Equation Auditor")
+st.title("🛡️ Full REBA, MHH & NIOSH Lifting Equation Auditor")
 
 with st.sidebar:
     st.header("Settings & MMH Inputs")
