@@ -1,38 +1,57 @@
-🛡️ AI REBA Auditor
-An AI-powered ergonomic assessment tool built for Automotive to automate the Rapid Entire Body Assessment (REBA) process. Using real-time computer vision, the app identifies skeletal landmarks to calculate postural risk scores instantly.
+# 🛡️ AI REBA & Object-Aware Ergonomic Auditor
 
-🚀 Features
-Real-time Tracking: Uses MediaPipe Pose to track 33 body landmarks without special hardware—just a standard webcam.
+An AI-powered ergonomic assessment and Manual Material Handling (MMH) audit tool built to automate the **Rapid Entire Body Assessment (REBA)** process for industrial and automotive manufacturing. 
 
-Automated REBA Scoring: Instant angle calculation for:
+By combining real-time pose estimation with object detection, the web app evaluates both postural risk and weight lifting limits dynamically in a single web interface.
 
-Trunk: Flexion, extension, and upright positioning.
+---
 
-Neck: Head tilt and alignment.
+## 🚀 Features & Key Enhancements
 
-Upper Arms: Reaching and elevation metrics.
+* **Real-time Posture Tracking:** Uses MediaPipe Pose to track 33 skeletal keypoints without specialized hardware—just a standard smartphone or laptop webcam.
+* **Automated REBA Scoring:** Instant angle and risk calculations for:
+  * **Trunk:** Flexion, extension, and alignment.
+  * **Neck:** Head tilt and positioning.
+  * **Upper Arms:** Elevation and reaching metrics.
+* **YOLO Object & Hand Interaction Tracking:**
+  * Powered by **YOLOv8 Nano** (`yolov8n.pt`) to detect carried objects, tools, and industrial containers.
+  * **Dynamic Hand Spatial Tracking:** Integrates MediaPipe wrist coordinates to define an active hand region, detecting whether an object is actively held or lifted in real time.
+* **Automated MMH Evaluation:**
+  * Automatically calculates **Vertical Height Zones** (*Above Shoulder, Shoulder to Elbow, Elbow to Knuckle, Knuckle to Mid-Leg, Below Mid-Leg*) and **Horizontal Reach** (*Close vs. Far*) based on live joint geometry.
+  * Dynamically evaluates recommended weight limits against standard ergonomic matrices for **Male/Female** operators.
+* **Strict 2-Page Audit PDF Reports:**
+  * **Page 1:** Executive REBA posture analysis, percentage time breakdown per body part score, and highlighted REBA Action Level table.
+  * **Page 2:** Manual Material Handling audit, automatically evaluated lifting zone, active YOLO hand-detected object, safe weight limits, and embedded ergonomic lifting diagram.
+  * **Visual Matrix Highlighting:** Highlights exact evaluated posture and weight limit cells in **yellow** inside exported PDF tables for immediate visual clarity.
+* **Cloud & Firewall Optimization:**
+  * Built using **Frame Skipping (10-frame intervals)** for YOLO inference to maintain low latency and stay within Streamlit Cloud’s ~1 GB memory limit.
+  * Integrated with **Metered.ca TURN/STUN servers** to bypass corporate network firewalls and proxy restrictions seamlessly.
 
-PDF Audit Reports: Capture a snapshot of high-risk postures and download a professional audit report for safety records.
+---
 
-Firewall Bypass: Integrated with Metered.ca TURN servers to ensure connectivity on strict factory/corporate Wi-Fi networks.
+## 🛠️ Tech Stack
 
-🛠️ Tech Stack
-Frontend: Streamlit
+* **Frontend & UI:** Streamlit
+* **Computer Vision & AI:** MediaPipe Pose, Ultralytics YOLOv8 Nano
+* **Video Streaming:** `streamlit-webrtc` + PyAV + OpenCV
+* **Document Generation:** `fpdf2`
+* **Networking / Firewall Bypass:** STUN/TURN via Metered.ca (Open Relay)
 
-AI Engine: MediaPipe
+---
 
-Video Streaming: streamlit-webrtc
+## 📦 Installation & Local Setup
 
-Networking: STUN/TURN via Metered.ca (Open Relay)
-
-📦 Installation & Local Setup
-Clone the repository:
-git clone https://github.com/your-username/geely-reba-auditor.git
-cd reba-auditor
+### 1. Clone the repository
+```bash
+git clone [https://github.com/RashidiA/Ergonomic-Risk-Evaluation-REBA.git](https://github.com/RashidiA/Ergonomic-Risk-Evaluation-REBA.git)
+cd Ergonomic-Risk-Evaluation-REBA
 
 Create a virtual environment (Python 3.11 recommended):
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
 
 Install dependencies:
 pip install -r requirements.txt
@@ -62,7 +81,7 @@ Audit: Watch the live "Risk Score" metrics. If the score turns red, the posture 
 Export: Click "Generate Audit Report" to save the findings as a PDF.
 
 🤝 Contributing
-This is an open-source project created for non-commercial ergonomic safety. Contributions to include Leg or Wrist scoring logic are welcome!
+Contributions to expand leg scoring, wrist flexion angles, or custom fine-tuned YOLO weights for specialized automotive parts are welcome!
 
 Disclaimer: This tool is for educational and preliminary audit purposes. It should not replace professional medical or ergonomic advice.
 
