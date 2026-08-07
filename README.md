@@ -81,7 +81,7 @@ Audit: Watch the live "Risk Score" metrics. If the score turns red, the posture 
 Export: Click "Generate Audit Report" to save the findings as a PDF.
 
 🤝 Contributing
-Contributions to expand leg scoring, wrist flexion angles, or custom fine-tuned YOLO weights for specialized automotive parts are welcome!
+Contributions to custom fine-tuned YOLO weights for specialized automotive parts are welcome!
 
 Disclaimer: This tool is for educational and preliminary audit purposes. It should not replace professional medical or ergonomic advice.
 
