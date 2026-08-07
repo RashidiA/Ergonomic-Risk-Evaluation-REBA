@@ -28,7 +28,9 @@ def get_global_store():
         "breakdown": {
             "Trunk": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
             "Neck": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
-            "Upper Arm": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0}
+            "Upper Arm": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
+            "Legs": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
+            "Wrists": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0}
         },
         "results": {
             "auto_zone": "Elbow to Knuckle",
@@ -44,9 +46,9 @@ def calculate_angle(a, b, c):
     a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians * 180.0 / np.pi)
-    return 360 - angle if angle > 180.0 else angle
+    return 360.0 - angle if angle > 180.0 else angle
 
-# --- REBA SCORING ENGINE ---
+# --- FULL REBA SCORING ENGINE ---
 def score_trunk(angle):
     dev = abs(180 - angle)
     if dev <= 5: return 1
@@ -64,26 +66,32 @@ def score_upper_arm(angle):
     if angle <= 90: return 3
     return 4
 
-# --- HELPER: BOUNDING BOX INTERSECTION (HAND VS OBJECT) ---
+def score_legs(knee_angle):
+    # REBA Leg Scoring (Knee Flexion)
+    flexion = abs(180.0 - knee_angle)
+    if flexion <= 30: return 1
+    if flexion <= 60: return 2
+    return 3
+
+def score_wrists(wrist_angle):
+    # REBA Wrist Scoring (Flexion/Extension)
+    dev = abs(180.0 - wrist_angle)
+    if dev <= 15: return 1
+    return 2
+
+# --- HELPER: BOUNDING BOX INTERSECTION ---
 def check_hand_object_intersection(hand_box, obj_box):
-    """
-    hand_box: (x1, y1, x2, y2) around wrist/hand
-    obj_box: (x1, y1, x2, y2) predicted by YOLO
-    """
     hx1, hy1, hx2, hy2 = hand_box
     ox1, oy1, ox2, oy2 = obj_box
 
-    # Calculate overlapping region
     ix1 = max(hx1, ox1)
     iy1 = max(hy1, oy1)
     ix2 = min(hx2, ox2)
     iy2 = min(hy2, oy2)
 
-    if ix1 < ix2 and iy1 < iy2:
-        return True
-    return False
+    return (ix1 < ix2) and (iy1 < iy2)
 
-# --- MANUAL WEIGHT LIFTING REFERENCE MATRIX (kg) ---
+# --- MANUAL WEIGHT LIFTING MATRIX ---
 LIFTING_MATRIX = {
     "Male": {
         "Above Shoulder": {"Close": 10.0, "Far": 5.0},
@@ -109,7 +117,7 @@ REBA_ACTION_TABLE = [
     ("11-15", "Very high", "Necessary urgent")
 ]
 
-# --- FIREWALL BYPASS (METERED.CA) ---
+# --- FIREWALL BYPASS ---
 @st.cache_data(ttl=3600)
 def get_ice_servers():
     try:
@@ -128,7 +136,7 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- PDF GENERATOR (STRICT 2-PAGE LAYOUT) ---
+# --- PDF GENERATOR (FULL BODY METRICS) ---
 def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=False)
@@ -144,35 +152,35 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     score = store_data.get("overall_score", 3)
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(0, 7, f"Evaluated Overall REBA Score: {score}", ln=True, align='C')
+    pdf.ln(2)
+    
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 5, "Full-Body Posture Duration Breakdown", ln=True)
+    pdf.set_font("Arial", 'B', 8.5)
+    pdf.cell(50, 5, "Body Part", border=1, align='C')
+    pdf.cell(45, 5, "Score 1-2 (%)", border=1, align='C')
+    pdf.cell(45, 5, "Score 3-4 (%)", border=1, align='C')
+    pdf.cell(45, 5, "Score 5+ (%)", border=1, align='C', ln=True)
+    
+    pdf.set_font("Arial", size=8.5)
+    breakdown = store_data.get("breakdown", {})
+    for part in ["Trunk", "Neck", "Upper Arm", "Legs", "Wrists"]:
+        stats = breakdown.get(part, {"1-2": 100.0, "3-4": 0.0, "5+": 0.0})
+        pdf.cell(50, 5, part, border=1)
+        pdf.cell(45, 5, f"{stats['1-2']:.1f}%", border=1, align='C')
+        pdf.cell(45, 5, f"{stats['3-4']:.1f}%", border=1, align='C')
+        pdf.cell(45, 5, f"{stats['5+']:.1f}%", border=1, align='C', ln=True)
+        
     pdf.ln(3)
     
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 6, "Posture Duration Analysis Breakdown", ln=True)
-    pdf.set_font("Arial", 'B', 9)
-    pdf.cell(50, 6, "Body Part", border=1, align='C')
-    pdf.cell(45, 6, "Score 1-2 (%)", border=1, align='C')
-    pdf.cell(45, 6, "Score 3-4 (%)", border=1, align='C')
-    pdf.cell(45, 6, "Score 5+ (%)", border=1, align='C', ln=True)
+    pdf.cell(0, 5, "REBA Standard Action & Risk Table", ln=True)
+    pdf.set_font("Arial", 'B', 8.5)
+    pdf.cell(40, 5, "REBA Score", border=1, align='C')
+    pdf.cell(60, 5, "Risk level", border=1, align='C')
+    pdf.cell(85, 5, "Action", border=1, align='C', ln=True)
     
-    pdf.set_font("Arial", size=9)
-    breakdown = store_data.get("breakdown", {})
-    for part in ["Trunk", "Neck", "Upper Arm"]:
-        stats = breakdown.get(part, {"1-2": 100.0, "3-4": 0.0, "5+": 0.0})
-        pdf.cell(50, 6, part, border=1)
-        pdf.cell(45, 6, f"{stats['1-2']:.1f}%", border=1, align='C')
-        pdf.cell(45, 6, f"{stats['3-4']:.1f}%", border=1, align='C')
-        pdf.cell(45, 6, f"{stats['5+']:.1f}%", border=1, align='C', ln=True)
-        
-    pdf.ln(4)
-    
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 6, "REBA Standard Action & Risk Table", ln=True)
-    pdf.set_font("Arial", 'B', 9)
-    pdf.cell(40, 6, "REBA Score", border=1, align='C')
-    pdf.cell(60, 6, "Risk level", border=1, align='C')
-    pdf.cell(85, 6, "Action", border=1, align='C', ln=True)
-    
-    pdf.set_font("Arial", size=9)
+    pdf.set_font("Arial", size=8.5)
     for r_score, r_level, r_action in REBA_ACTION_TABLE:
         if r_score == "1": is_match = (score == 1)
         elif r_score == "2-3": is_match = (score in [2, 3])
@@ -185,9 +193,9 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         if fill_flag:
             pdf.set_fill_color(255, 255, 0)
 
-        pdf.cell(40, 6, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
-        pdf.cell(60, 6, r_level, border=1, fill=fill_flag)
-        pdf.cell(85, 6, r_action, border=1, ln=True, fill=fill_flag)
+        pdf.cell(40, 5, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
+        pdf.cell(60, 5, r_level, border=1, fill=fill_flag)
+        pdf.cell(85, 5, r_action, border=1, ln=True, fill=fill_flag)
         
     pdf.set_y(-15)
     pdf.set_font("Arial", 'I', 8)
@@ -280,7 +288,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR (MEDIAPIPE POSE + OBJECT ON HAND DYNAMICS) ---
+# --- HYBRID VIDEO PROCESSOR WITH FULL-BODY TRACKING ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -291,11 +299,13 @@ class REBAProcessor(VideoProcessorBase):
         self.counts = {
             "Trunk": {"1-2": 0, "3-4": 0, "5+": 0},
             "Neck": {"1-2": 0, "3-4": 0, "5+": 0},
-            "Upper Arm": {"1-2": 0, "3-4": 0, "5+": 0}
+            "Upper Arm": {"1-2": 0, "3-4": 0, "5+": 0},
+            "Legs": {"1-2": 0, "3-4": 0, "5+": 0},
+            "Wrists": {"1-2": 0, "3-4": 0, "5+": 0}
         }
         self.total_frames = 0
         self.last_detected_obj = "None (Hands Free)"
-        self.hand_box = None  # (x1, y1, x2, y2) around wrists
+        self.hand_box = None
 
     def recv(self, frame):
         if self.start_time is None:
@@ -306,43 +316,54 @@ class REBAProcessor(VideoProcessorBase):
         h, w, _ = img.shape
         self.total_frames += 1
 
-        # --- 1. MEDIAPIPE POSE & HAND TRACKING ---
+        # --- 1. FULL-BODY POSE ESTIMATION ---
         results = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             
-            # Keypoints
+            # Keypoints (Upper Body)
             shld = [lm[11].x * w, lm[11].y * h]
             hip = [lm[23].x * w, lm[23].y * h]
-            knee = [lm[25].x * w, lm[25].y * h]
             elbw = [lm[13].x * w, lm[13].y * h]
             nose = [lm[0].x * w, lm[0].y * h]
             
-            # Wrists
+            # Wrists & Index Fingers
             l_wrist = [lm[15].x * w, lm[15].y * h]
             r_wrist = [lm[16].x * w, lm[16].y * h]
+            l_index = [lm[19].x * w, lm[19].y * h]
+
+            # Lower Body Keypoints (Legs)
+            knee = [lm[25].x * w, lm[25].y * h]
+            ankle = [lm[27].x * w, lm[27].y * h]
 
             # Dynamic Hand Region (ROI around hands/wrists)
-            margin = int(w * 0.12)  # 12% frame margin around wrists
+            margin = int(w * 0.12)
             hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
             hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
             hx2 = int(min(w, max(l_wrist[0], r_wrist[0]) + margin))
             hy2 = int(min(h, max(l_wrist[1], r_wrist[1]) + margin))
             self.hand_box = (hx1, hy1, hx2, hy2)
 
-            # Draw Hand Detection Region
             cv2.rectangle(img, (hx1, hy1), (hx2, hy2), (255, 105, 180), 1, cv2.LINE_AA)
-            cv2.putText(img, "Hand Tracking Region", (hx1, max(15, hy1 - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 105, 180), 1)
 
-            # REBA Posture Calculation
+            # --- FULL REBA ANGLE CALCULATIONS ---
             t_score = score_trunk(calculate_angle(shld, hip, knee))
             a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
             n_score = score_neck(calculate_angle(nose, shld, hip))
-            total_reba = t_score + n_score + a_score
+            
+            # Leg Flexion Angle (Hip -> Knee -> Ankle)
+            knee_angle = calculate_angle(hip, knee, ankle)
+            l_score = score_legs(knee_angle)
 
-            # Auto Zone & Reach
+            # Wrist Flexion Angle (Elbow -> Wrist -> Index Finger)
+            wrist_angle = calculate_angle(elbw, l_wrist, l_index)
+            w_score = score_wrists(wrist_angle)
+
+            # Total REBA Score (Trunk + Neck + Upper Arm + Legs + Wrists)
+            total_reba = t_score + n_score + a_score + l_score + w_score
+
+            # Auto Height Zone & Reach
             avg_wrist_y = (l_wrist[1] + r_wrist[1]) / 2.0
             if avg_wrist_y < shld[1]:
                 detected_zone = "Above Shoulder"
@@ -358,7 +379,7 @@ class REBAProcessor(VideoProcessorBase):
             arm_reach_dist = abs(l_wrist[0] - shld[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
 
-            # --- 2. YOLO OBJECT-ON-HAND DETECTION (EVERY 10 FRAMES) ---
+            # --- 2. YOLO OBJECT ON HAND DETECTION (EVERY 10 FRAMES) ---
             if self.total_frames % 10 == 0:
                 try:
                     yolo_res = yolo_model(img, verbose=False, conf=0.30)[0]
@@ -366,17 +387,14 @@ class REBAProcessor(VideoProcessorBase):
                     
                     for box in yolo_res.boxes:
                         cls_id = int(box.cls[0])
-                        # Ignore person class (0)
-                        if cls_id != 0:
+                        if cls_id != 0:  # Ignore person class
                             b = box.xyxy[0].cpu().numpy().astype(int)
                             obj_box = (b[0], b[1], b[2], b[3])
                             
-                            # Check if YOLO object overlaps with MediaPipe Hand Region
                             if self.hand_box and check_hand_object_intersection(self.hand_box, obj_box):
                                 obj_name = yolo_model.names[cls_id]
                                 found_obj_on_hand = f"{obj_name} (Lifted)"
                                 
-                                # Highlight object on hand in RED
                                 cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 3)
                                 cv2.putText(img, f"HEAVY LOAD: {obj_name.upper()}", 
                                             (b[0], max(20, b[1]-10)),
@@ -387,8 +405,9 @@ class REBAProcessor(VideoProcessorBase):
                 except Exception:
                     pass
 
-            # Accumulate Statistics
-            for name, sc in [("Trunk", t_score), ("Neck", n_score), ("Upper Arm", a_score)]:
+            # Accumulate Statistics for All Body Parts
+            for name, sc in [("Trunk", t_score), ("Neck", n_score), ("Upper Arm", a_score), 
+                             ("Legs", l_score), ("Wrists", w_score)]:
                 if sc <= 2: self.counts[name]["1-2"] += 1
                 elif sc <= 4: self.counts[name]["3-4"] += 1
                 else: self.counts[name]["5+"] += 1
@@ -399,12 +418,11 @@ class REBAProcessor(VideoProcessorBase):
                     "1-2": (self.counts[name]["1-2"] / tf) * 100.0,
                     "3-4": (self.counts[name]["3-4"] / tf) * 100.0,
                     "5+": (self.counts[name]["5+"] / tf) * 100.0
-                } for name in ["Trunk", "Neck", "Upper Arm"]
+                } for name in ["Trunk", "Neck", "Upper Arm", "Legs", "Wrists"]
             }
 
             elapsed_dur = time.time() - self.start_time
 
-            # Sync Store
             GLOBAL_STORE["total_duration"] = elapsed_dur
             GLOBAL_STORE["overall_score"] = total_reba
             GLOBAL_STORE["breakdown"] = breakdown_pct
@@ -415,16 +433,16 @@ class REBAProcessor(VideoProcessorBase):
             }
             GLOBAL_STORE["frame"] = img.copy()
 
-            # Skeleton & REBA Score Overlay
+            # Skeleton & REBA Overlay
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            cv2.putText(img, f"REBA Score: {total_reba}", (10, 40), 
+            cv2.putText(img, f"Full REBA Score: {total_reba}", (10, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="REBA + YOLO AI Auditor", layout="wide")
-st.title("🛡️ Live REBA & Object-Aware Ergonomic Auditor")
+st.set_page_config(page_title="Full REBA & Object-Aware AI Auditor", layout="wide")
+st.title("🛡️ Full-Body REBA & MMH Ergonomic Auditor")
 
 with st.sidebar:
     st.header("Settings & MMH Inputs")
@@ -433,7 +451,7 @@ with st.sidebar:
     actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
 
 ctx = webrtc_streamer(
-    key="reba-yolo-ai",
+    key="full-reba-ai",
     video_processor_factory=REBAProcessor,
     rtc_configuration={"iceServers": get_ice_servers()},
     media_stream_constraints={"video": True, "audio": False}
@@ -450,12 +468,11 @@ st.caption(f"📍 Automatically Evaluated Zone: **{res_data.get('auto_zone', 'El
 
 st.markdown("---")
 
-# Download PDF Report
 pdf_bytes = generate_custom_pdf(op_id, profile, actual_wt, GLOBAL_STORE)
 
 st.download_button(
-    label="📥 Download REBA Lifting Audit PDF Report", 
+    label="📥 Download Full REBA Audit PDF Report", 
     data=pdf_bytes, 
-    file_name=f"REBA_Lifting_Audit_{op_id}.pdf", 
+    file_name=f"Full_REBA_Audit_{op_id}.pdf", 
     mime="application/pdf"
 )
