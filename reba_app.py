@@ -430,7 +430,8 @@ class REBAProcessor(VideoProcessorBase):
             knee = [lm[25].x * w, lm[25].y * h]
             ankle = [lm[27].x * w, lm[27].y * h]
 
-            margin = int(w * 0.12)
+            # Expanded hand region margin (20% width) for better item enclosement
+            margin = int(w * 0.20)
             hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
             hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
             hx2 = int(min(w, max(l_wrist[0], r_wrist[0]) + margin))
@@ -459,7 +460,6 @@ class REBAProcessor(VideoProcessorBase):
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
 
             # --- DYNAMIC NIOSH PARAMETER CALCULATIONS ---
-            # Scale px to cm assuming average shoulder-to-hip height = 50cm
             scale_px_to_cm = 50.0 / max(1.0, abs(hip[1] - shld[1]))
             
             h_cm = abs(l_wrist[0] - ankle[0]) * scale_px_to_cm
@@ -467,17 +467,24 @@ class REBAProcessor(VideoProcessorBase):
             d_cm = abs(shld[1] - l_wrist[1]) * scale_px_to_cm
             angle_deg = abs(180.0 - calculate_angle(shld, hip, knee))
 
-            # --- YOLO OBJECT DETECT & NIOSH TRIGGER (EVERY 10 FRAMES) ---
-            if self.total_frames % 10 == 0:
+            # --- YOLO OBJECT DETECT & NIOSH TRIGGER (EVERY 5 FRAMES) ---
+            if self.total_frames % 5 == 0:
                 try:
-                    yolo_res = yolo_model(img, verbose=False, conf=0.30)[0]
+                    # 1. Convert BGR to RGB explicitly for Ultralytics YOLO
+                    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    
+                    # 2. Lower confidence to 0.15 for better webcam detection
+                    yolo_res = yolo_model(rgb_img, verbose=False, conf=0.15)[0]
                     found_obj_on_hand = "None (Hands Free)"
                     
                     for box in yolo_res.boxes:
                         cls_id = int(box.cls[0])
-                        if cls_id != 0:
+                        if cls_id != 0:  # Exclude 'person' class
                             b = box.xyxy[0].cpu().numpy().astype(int)
                             obj_box = (b[0], b[1], b[2], b[3])
+                            
+                            # Draw ALL detected non-person objects in BLUE for visual feedback
+                            cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (255, 0, 0), 1)
                             
                             if self.hand_box and check_hand_object_intersection(self.hand_box, obj_box):
                                 obj_name = yolo_model.names[cls_id]
@@ -488,6 +495,7 @@ class REBAProcessor(VideoProcessorBase):
                                 niosh_res = compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_wt)
                                 GLOBAL_STORE["niosh"] = niosh_res
 
+                                # Highlight object in RED when in hand
                                 cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 3)
                                 cv2.putText(img, f"LOAD DETECTED: {obj_name.upper()} | RWL: {niosh_res['rwl']:.1f}kg", 
                                             (b[0], max(20, b[1]-10)),
