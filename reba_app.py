@@ -430,7 +430,6 @@ class REBAProcessor(VideoProcessorBase):
             knee = [lm[25].x * w, lm[25].y * h]
             ankle = [lm[27].x * w, lm[27].y * h]
 
-            # Expanded hand region margin (20% width) for better item enclosement
             margin = int(w * 0.20)
             hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
             hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
@@ -470,10 +469,7 @@ class REBAProcessor(VideoProcessorBase):
             # --- YOLO OBJECT DETECT & NIOSH TRIGGER (EVERY 5 FRAMES) ---
             if self.total_frames % 5 == 0:
                 try:
-                    # 1. Convert BGR to RGB explicitly for Ultralytics YOLO
                     rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    
-                    # 2. Lower confidence to 0.15 for better webcam detection
                     yolo_res = yolo_model(rgb_img, verbose=False, conf=0.15)[0]
                     found_obj_on_hand = "None (Hands Free)"
                     
@@ -483,26 +479,32 @@ class REBAProcessor(VideoProcessorBase):
                             b = box.xyxy[0].cpu().numpy().astype(int)
                             obj_box = (b[0], b[1], b[2], b[3])
                             
-                            # Draw ALL detected non-person objects in BLUE for visual feedback
+                            # Draw blue debug box for detected objects
                             cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (255, 0, 0), 1)
                             
                             if self.hand_box and check_hand_object_intersection(self.hand_box, obj_box):
-                                obj_name = yolo_model.names[cls_id]
-                                found_obj_on_hand = f"{obj_name} (Lifted)"
+                                raw_name = yolo_model.names[cls_id]
+                                found_obj_on_hand = f"{raw_name} (Lifted)"
                                 
                                 # TRIGGER NIOSH CALCULATION ON DETECTED OBJECT
                                 actual_wt = GLOBAL_STORE.get("actual_weight", 8.0)
                                 niosh_res = compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_wt)
+                                
+                                # DIRECT GLOBAL STORE WRITE FOR BOTH APP & PDF THREADS
                                 GLOBAL_STORE["niosh"] = niosh_res
+                                GLOBAL_STORE["results"]["detected_object"] = raw_name
 
-                                # Highlight object in RED when in hand
+                                # Highlight object in RED when on hand
                                 cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 3)
-                                cv2.putText(img, f"LOAD DETECTED: {obj_name.upper()} | RWL: {niosh_res['rwl']:.1f}kg", 
+                                cv2.putText(img, f"LOAD DETECTED: {raw_name.upper()} | RWL: {niosh_res['rwl']:.1f}kg", 
                                             (b[0], max(20, b[1]-10)),
                                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
                                 break
 
                     self.last_detected_obj = found_obj_on_hand
+                    # Update global store if hands are free
+                    if found_obj_on_hand == "None (Hands Free)":
+                        GLOBAL_STORE["results"]["detected_object"] = "None (Hands Free)"
                 except Exception:
                     pass
 
@@ -524,11 +526,8 @@ class REBAProcessor(VideoProcessorBase):
             GLOBAL_STORE["total_duration"] = time.time() - self.start_time
             GLOBAL_STORE["overall_score"] = total_reba
             GLOBAL_STORE["breakdown"] = breakdown_pct
-            GLOBAL_STORE["results"] = {
-                "auto_zone": detected_zone,
-                "auto_reach": detected_reach,
-                "detected_object": self.last_detected_obj
-            }
+            GLOBAL_STORE["results"]["auto_zone"] = detected_zone
+            GLOBAL_STORE["results"]["auto_reach"] = detected_reach
             GLOBAL_STORE["frame"] = img.copy()
 
             mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
