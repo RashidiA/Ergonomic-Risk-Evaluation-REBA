@@ -1,43 +1,58 @@
-# 🛡️ AI REBA & Object-Aware Ergonomic Auditor
+# 🛡️ Real-Time REBA & NIOSH Ergonomic AI Auditor
 
-An AI-powered ergonomic assessment and Manual Material Handling (MMH) audit tool built to automate the **Rapid Entire Body Assessment (REBA)** process for industrial and automotive manufacturing. 
-
-By combining real-time pose estimation with object detection, the web app evaluates both postural risk and weight lifting limits dynamically in a single web interface.
+An AI-powered computer vision application built with **Streamlit**, **MediaPipe**, **YOLOv8**, and **FPDF**. The application performs live ergonomic posture risk assessment using the **REBA (Rapid Entire Body Assessment)** framework and automatically triggers a **NIOSH Lifting Equation Assessment** whenever a lifted object is detected on the operator's hand.
 
 ---
 
-## 🚀 Features & Key Enhancements
+## ✨ Key Features
 
-* **Real-time Posture Tracking:** Uses MediaPipe Pose to track 33 skeletal keypoints without specialized hardware—just a standard smartphone or laptop webcam.
-* **Automated REBA Scoring:** Instant angle and risk calculations for:
-  * **Trunk:** Flexion, extension, and alignment.
-  * **Neck:** Head tilt and positioning.
-  * **Upper Arms:** Elevation and reaching metrics.
-* **YOLO Object & Hand Interaction Tracking:**
-  * Powered by **YOLOv8 Nano** (`yolov8n.pt`) to detect carried objects, tools, and industrial containers.
-  * **Dynamic Hand Spatial Tracking:** Integrates MediaPipe wrist coordinates to define an active hand region, detecting whether an object is actively held or lifted in real time.
-* **Automated MMH Evaluation:**
-  * Automatically calculates **Vertical Height Zones** (*Above Shoulder, Shoulder to Elbow, Elbow to Knuckle, Knuckle to Mid-Leg, Below Mid-Leg*) and **Horizontal Reach** (*Close vs. Far*) based on live joint geometry.
-  * Dynamically evaluates recommended weight limits against standard ergonomic matrices for **Male/Female** operators.
-* **Strict 2-Page Audit PDF Reports:**
-  * **Page 1:** Executive REBA posture analysis, percentage time breakdown per body part score, and highlighted REBA Action Level table.
-  * **Page 2:** Manual Material Handling audit, automatically evaluated lifting zone, active YOLO hand-detected object, safe weight limits, and embedded ergonomic lifting diagram.
-  * **Visual Matrix Highlighting:** Highlights exact evaluated posture and weight limit cells in **yellow** inside exported PDF tables for immediate visual clarity.
-* **Cloud & Firewall Optimization:**
-  * Built using **Frame Skipping (10-frame intervals)** for YOLO inference to maintain low latency and stay within Streamlit Cloud’s ~1 GB memory limit.
-  * Integrated with **Metered.ca TURN/STUN servers** to bypass corporate network firewalls and proxy restrictions seamlessly.
+1. **Real-Time REBA Posture Evaluation:**
+   - Tracks 3D full-body pose landmarks using MediaPipe.
+   - Dynamic joint angle calculations for Trunk, Neck, Upper Arms, Legs, and Wrists.
+   - Real-time time-series percentage breakdown across REBA score tiers ($1\text{--}2$, $3\text{--}4$, $5+$).
+
+2. **YOLOv8-Driven Object Detection & Hand Intersection:**
+   - Detects objects held or manipulated by the operator using YOLOv8 Nano.
+   - Calculates dynamic bounding-box intersections between hand landmarks and objects to automatically trigger ergonomic lifting checks.
+
+3. **Automated NIOSH Lifting Equation (NLE) Engine:**
+   - Dynamically calculates spatial parameters ($H, V, D, A$) in real time from skeletal pixel-to-cm calibrations.
+   - Computes all six NIOSH multipliers ($\text{HM}, \text{VM}, \text{DM}, \text{AM}, \text{FM}, \text{CM}$) to yield the **Recommended Weight Limit (RWL)** and **Lifting Index (LI)**.
+
+4. **Comprehensive 3-Page PDF Audit Report:**
+   - **Page 1:** Full-Body REBA Posture Breakdown & Action/Risk Level Reference.
+   - **Page 2:** Standard Manual Material Handling (MMH) Weight Matrix Assessment.
+   - **Page 3:** Dedicated NIOSH Lifting Equation Audit with Multiplier Table & Safety Status ($\text{LI} \le 1.0$).
+
+5. **Firewall / WebRTC Bypass:**
+   - Integrated Metered STUN/TURN server support for stable video streaming across corporate firewalls.
+
+---
+
+## 📐 Mathematical & Ergonomic Frameworks
+
+### 1. REBA Joint Scoring
+Joint angles ($\theta$) are calculated via vector dot products across skeletal landmark triplets:
+$$\theta = \arccos\left( \frac{\mathbf{u} \cdot \mathbf{v}}{\Vert{}\mathbf{u}\Vert{} \Vert{}\mathbf{v}\Vert{}} \right)$$
+
+### 2. NIOSH Lifting Equation
+$$\text{RWL} = \text{LC} \times \text{HM} \times \text{VM} \times \text{DM} \times \text{AM} \times \text{FM} \times \text{CM}$$
+
+Where:
+* **Load Constant ($\text{LC}$):** $23 \text{ kg}$
+* **Horizontal Multiplier ($\text{HM}$):** $\frac{25}{H}$ ($H$ in cm, bounded between $25$ and $63\text{ cm}$)
+* **Vertical Multiplier ($\text{VM}$):** $1 - 0.003 \vert{}V - 75\vert{}$ ($V$ in cm)
+* **Distance Multiplier ($\text{DM}$):** $0.82 + \frac{4.5}{D}$ ($D$ in cm)
+* **Asymmetric Multiplier ($\text{AM}$):** $1 - 0.0032(\alpha)$ ($\alpha$ in degrees)
+* **Lifting Index ($\text{LI}$):** $\frac{\text{Actual Weight}}{\text{RWL}}$ (Safe if $\text{LI} \le 1.0$)
 
 ---
 
-## 🛠️ Tech Stack
+## 🚀 Getting Started
 
-* **Frontend & UI:** Streamlit
-* **Computer Vision & AI:** MediaPipe Pose, Ultralytics YOLOv8 Nano
-* **Video Streaming:** `streamlit-webrtc` + PyAV + OpenCV
-* **Document Generation:** `fpdf2`
-* **Networking / Firewall Bypass:** STUN/TURN via Metered.ca (Open Relay)
-
----
+### Prerequisites
+* Python 3.9, 3.10, or 3.11
+* Web Camera (Local or External)
 
 ## 📦 Installation & Local Setup
 
