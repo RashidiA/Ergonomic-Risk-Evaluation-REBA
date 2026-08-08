@@ -28,6 +28,7 @@ def get_global_store():
         "frame": None,
         "total_duration": 0.0,
         "overall_score": 3,
+        "last_detected_object": "None (Hands Free)",  # Persistent Latch
         "breakdown": {
             "Trunk": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
             "Neck": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
@@ -41,19 +42,9 @@ def get_global_store():
             "detected_object": "None (Hands Free)"
         },
         "niosh": {
-            "h_cm": 30.0,
-            "v_cm": 75.0,
-            "d_cm": 25.0,
-            "angle_deg": 0.0,
-            "hm": 0.83,
-            "vm": 1.00,
-            "dm": 1.00,
-            "am": 1.00,
-            "fm": 0.95,
-            "cm": 1.00,
-            "rwl": 18.2,
-            "li": 0.44,
-            "status": "SAFE (LI <= 1.0)"
+            "h_cm": 30.0, "v_cm": 75.0, "d_cm": 25.0, "angle_deg": 0.0,
+            "hm": 0.83, "vm": 1.00, "dm": 1.00, "am": 1.00, "fm": 0.95, "cm": 1.00,
+            "rwl": 18.2, "li": 0.44, "status": "SAFE (LI <= 1.0)"
         }
     }
 
@@ -131,14 +122,9 @@ def check_hand_object_intersection(hand_box, obj_box):
 
 # --- ADVANCED FINGER-BASED NON-COCO UNKNOWN OBJECT DETECTOR ---
 def detect_object_near_fingers(img, finger_pts, img_w, img_h):
-    """
-    Uses MediaPipe finger landmark positions to search for non-skin, 
-    solid object regions directly grasped by the fingers.
-    """
     if not finger_pts:
         return False, None
 
-    # Calculate bounding area around fingers with dynamic margin
     xs = [pt[0] for pt in finger_pts]
     ys = [pt[1] for pt in finger_pts]
     
@@ -157,7 +143,7 @@ def detect_object_near_fingers(img, finger_pts, img_w, img_h):
     if roi.size == 0 or (fx2 - fx1) < 20 or (fy2 - fy1) < 20:
         return False, None
 
-    # 1. Skin tone filtering (HSV space) to separate fingers from held object
+    # 1. Skin tone filtering (HSV space)
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     lower_skin = np.array([0, 20, 70], dtype=np.uint8)
     upper_skin = np.array([20, 255, 255], dtype=np.uint8)
@@ -179,7 +165,6 @@ def detect_object_near_fingers(img, finger_pts, img_w, img_h):
     roi_area = (fx2 - fx1) * (fy2 - fy1)
     for c in contours:
         c_area = cv2.contourArea(c)
-        # Trigger if object region takes at least 8% of finger ROI area
         if c_area > (0.08 * roi_area):
             x, y, w, h = cv2.boundingRect(c)
             abs_box = (fx1 + x, fy1 + y, fx1 + x + w, fy1 + y + h)
@@ -307,7 +292,9 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     res_data = store_data.get("results", {})
     auto_zone = res_data.get("auto_zone", "Elbow to Knuckle")
     auto_reach = res_data.get("auto_reach", "Close")
-    detected_obj = res_data.get("detected_object", "None (Hands Free)")
+    
+    # Use Persistent Latched Object for Report
+    detected_obj = store_data.get("last_detected_object", res_data.get("detected_object", "None (Hands Free)"))
     
     max_limit = LIFTING_MATRIX[profile][auto_zone][auto_reach]
     status_str = "WITHIN SAFE ERGONOMIC LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE ERGONOMIC LIMIT"
@@ -316,7 +303,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.cell(0, 6, "Manual Material Handling Evaluation Summary", ln=True)
     pdf.set_font("Arial", size=9)
     pdf.cell(0, 5, f"Automatically Evaluated Zone: {auto_zone} ({auto_reach})", ln=True)
-    pdf.cell(0, 5, f"YOLO Detected Object on Hand: {detected_obj.title()}", ln=True)
+    pdf.cell(0, 5, f"YOLO / Sensor Detected Object: {detected_obj.title()}", ln=True)
     pdf.cell(0, 5, f"Actual Weight Lifted: {actual_weight:.1f} kg", ln=True)
     pdf.cell(0, 5, f"Max Recommended Limit: {max_limit:.1f} kg", ln=True)
     pdf.set_font("Arial", 'B', 9)
@@ -349,7 +336,6 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
             pdf.cell(60, 6, f"{vals['Far']:.1f} kg", border=1, align='C', fill=False, ln=True)
         
     pdf.ln(3)
-    
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "Ergonomic Lifting Reference Diagram", ln=True)
     
@@ -390,7 +376,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.ln(3)
     
     nd = store_data.get("niosh", {})
-    obj_name_str = res_data.get("detected_object", "None (Hands Free)")
+    obj_name_str = store_data.get("last_detected_object", res_data.get("detected_object", "None (Hands Free)"))
     
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "1. Object & Load Condition", ln=True)
@@ -440,7 +426,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR WITH DUAL-DETECTION SENSOR ---
+# --- HYBRID VIDEO PROCESSOR WITH DETECT-LATCH MEMORY ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -486,10 +472,8 @@ class REBAProcessor(VideoProcessorBase):
             knee = [lm[25].x * w, lm[25].y * h]
             ankle = [lm[27].x * w, lm[27].y * h]
 
-            # Collect active hand/finger landmark points
             finger_landmarks = [l_wrist, r_wrist, l_index, r_index, l_pinky, r_pinky]
 
-            # Bounding box around hand points
             margin = int(w * 0.18)
             hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
             hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
@@ -497,7 +481,6 @@ class REBAProcessor(VideoProcessorBase):
             hy2 = int(min(h, max(l_wrist[1], r_wrist[1]) + margin))
             self.hand_box = (hx1, hy1, hx2, hy2)
 
-            # REBA Posture Angles
             t_score = score_trunk(calculate_angle(shld, hip, knee))
             a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
             n_score = score_neck(calculate_angle(nose, shld, hip))
@@ -516,7 +499,6 @@ class REBAProcessor(VideoProcessorBase):
             arm_reach_dist = abs(l_wrist[0] - shld[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
 
-            # Dynamic NIOSH spatial calculations
             scale_px_to_cm = 50.0 / max(1.0, abs(hip[1] - shld[1]))
             h_cm = abs(l_wrist[0] - ankle[0]) * scale_px_to_cm
             v_cm = abs(ankle[1] - l_wrist[1]) * scale_px_to_cm
@@ -531,10 +513,10 @@ class REBAProcessor(VideoProcessorBase):
                     found_obj = None
                     obj_box_draw = None
 
-                    # 1. Primary Pass: Check COCO YOLO dataset
+                    # 1. Primary Pass: COCO YOLO
                     for box in yolo_res.boxes:
                         cls_id = int(box.cls[0])
-                        if cls_id != 0:  # Ignore person class
+                        if cls_id != 0:
                             b = box.xyxy[0].cpu().numpy().astype(int)
                             obj_b = (b[0], b[1], b[2], b[3])
                             if self.hand_box and check_hand_object_intersection(self.hand_box, obj_b):
@@ -549,13 +531,15 @@ class REBAProcessor(VideoProcessorBase):
                             found_obj = "Unidentified Object"
                             obj_box_draw = unknown_b
 
-                    # Update NIOSH and Global Store if any object is detected
+                    # --- LATCHING LOGIC FOR REPORT PERSISTENCE ---
                     if found_obj:
                         actual_wt = GLOBAL_STORE.get("actual_weight", 8.0)
                         niosh_res = compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_wt)
                         
                         GLOBAL_STORE["niosh"] = niosh_res
                         GLOBAL_STORE["results"]["detected_object"] = found_obj
+                        # Persist latched object state to guarantee memory in PDF
+                        GLOBAL_STORE["last_detected_object"] = found_obj
 
                         if obj_box_draw:
                             cv2.rectangle(img, (obj_box_draw[0], obj_box_draw[1]), 
@@ -564,7 +548,9 @@ class REBAProcessor(VideoProcessorBase):
                                         (obj_box_draw[0], max(20, obj_box_draw[1]-10)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
                     else:
-                        GLOBAL_STORE["results"]["detected_object"] = "None (Hands Free)"
+                        # Fallback to latched detected object if previously captured in current run
+                        latched = GLOBAL_STORE.get("last_detected_object", "None (Hands Free)")
+                        GLOBAL_STORE["results"]["detected_object"] = latched
 
                 except Exception:
                     pass
@@ -599,7 +585,7 @@ class REBAProcessor(VideoProcessorBase):
 
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="REBA + NIOSH AI Auditor", layout="wide")
-st.title("🛡️ Full REBA, MHH & NIOSH Lifting Equation Auditor")
+st.title("🛡️ Full REBA, MMH & NIOSH Lifting Equation Auditor")
 
 with st.sidebar:
     st.header("Settings & MMH Inputs")
@@ -607,6 +593,11 @@ with st.sidebar:
     profile = st.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
     actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
     GLOBAL_STORE["actual_weight"] = actual_wt
+
+    if st.button("🔄 Reset Object Latch Memory"):
+        GLOBAL_STORE["last_detected_object"] = "None (Hands Free)"
+        GLOBAL_STORE["results"]["detected_object"] = "None (Hands Free)"
+        st.success("Object detection state reset to Hands Free!")
 
 ctx = webrtc_streamer(
     key="reba-niosh-ai",
@@ -619,8 +610,10 @@ st.markdown("### Live / Last Captured Metrics")
 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
 m_col1.metric("Overall REBA Score", GLOBAL_STORE["overall_score"])
 m_col2.metric("Total Duration (s)", f"{GLOBAL_STORE['total_duration']:.1f}")
+
 res_data = GLOBAL_STORE["results"]
-m_col3.metric("Object on Hand", res_data.get("detected_object", "None (Hands Free)").title())
+latched_obj = GLOBAL_STORE.get("last_detected_object", res_data.get("detected_object", "None (Hands Free)"))
+m_col3.metric("Object on Hand", latched_obj.title())
 
 niosh_data = GLOBAL_STORE.get("niosh", {})
 m_col4.metric("NIOSH RWL / LI", f"{niosh_data.get('rwl', 0.0):.1f} kg (LI: {niosh_data.get('li', 0.0):.2f})")
