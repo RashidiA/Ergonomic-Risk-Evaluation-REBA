@@ -11,11 +11,10 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
 from ultralytics import YOLO
 
-# --- LOAD & PRE-WARM YOLO MODEL (PREVENTS 5-SEC STARTUP LAG) ---
+# --- LOAD & PRE-WARM YOLO MODEL ---
 @st.cache_resource
 def load_and_warmup_yolo():
     model = YOLO("yolov8n.pt")
-    # Pre-warm execution engine with a blank dummy image
     dummy_img = np.zeros((480, 640, 3), dtype=np.uint8)
     _ = model(dummy_img, verbose=False)
     return model
@@ -130,33 +129,62 @@ def check_hand_object_intersection(hand_box, obj_box):
     ix2, iy2 = min(hx2, ox2), min(hy2, oy2)
     return (ix1 < ix2) and (iy1 < iy2)
 
-# --- NON-COCO UNKNOWN OBJECT SENSOR ---
-def detect_generic_hand_object(img, hand_box):
-    """Detects unidentified visual clutter/objects held in hand box even if not in COCO dataset."""
-    hx1, hy1, hx2, hy2 = hand_box
-    if (hx2 <= hx1) or (hy2 <= hy1):
+# --- ADVANCED FINGER-BASED NON-COCO UNKNOWN OBJECT DETECTOR ---
+def detect_object_near_fingers(img, finger_pts, img_w, img_h):
+    """
+    Uses MediaPipe finger landmark positions to search for non-skin, 
+    solid object regions directly grasped by the fingers.
+    """
+    if not finger_pts:
         return False, None
 
-    hand_roi = img[hy1:hy2, hx1:hx2]
-    if hand_roi.size == 0:
+    # Calculate bounding area around fingers with dynamic margin
+    xs = [pt[0] for pt in finger_pts]
+    ys = [pt[1] for pt in finger_pts]
+    
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    
+    margin_x = int(img_w * 0.22)
+    margin_y = int(img_h * 0.25)
+    
+    fx1 = max(0, int(min_x - margin_x))
+    fy1 = max(0, int(min_y - margin_y))
+    fx2 = min(img_w, int(max_x + margin_x))
+    fy2 = min(img_h, int(max_y + margin_y))
+    
+    roi = img[fy1:fy2, fx1:fx2]
+    if roi.size == 0 or (fx2 - fx1) < 20 or (fy2 - fy1) < 20:
         return False, None
 
-    # Convert to grayscale & run edge detection to find foreign objects
-    gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blur, 50, 150)
+    # 1. Skin tone filtering (HSV space) to separate fingers from held object
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    lower_skin = np.array([0, 20, 70], dtype=np.uint8)
+    upper_skin = np.array([20, 255, 255], dtype=np.uint8)
+    skin_mask = cv2.inRange(hsv, lower_skin, upper_skin)
+    non_skin_mask = cv2.bitwise_not(skin_mask)
+
+    # 2. Thresholding non-skin visual structures (Otsu Adaptive)
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    _, otsu_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    combined = cv2.bitwise_and(otsu_thresh, non_skin_mask)
     
-    roi_area = (hx2 - hx1) * (hy2 - hy1)
+    # 3. Morphological closing to fill object solid shapes
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    closed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    roi_area = (fx2 - fx1) * (fy2 - fy1)
     for c in contours:
         c_area = cv2.contourArea(c)
-        # If object takes up between 5% and 60% of hand box, consider it an unidentified object
-        if 0.05 * roi_area < c_area < 0.60 * roi_area:
+        # Trigger if object region takes at least 8% of finger ROI area
+        if c_area > (0.08 * roi_area):
             x, y, w, h = cv2.boundingRect(c)
-            abs_box = (hx1 + x, hy1 + y, hx1 + x + w, hy1 + y + h)
+            abs_box = (fx1 + x, fy1 + y, fx1 + x + w, fy1 + y + h)
             return True, abs_box
-            
+
     return False, None
 
 # --- MANUAL WEIGHT LIFTING MATRIX ---
@@ -358,7 +386,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, "NIOSH LIFTING EQUATION ASSESSMENT", ln=True, align='C')
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 5, f"Operator: {operator_id} | Trigger Source: YOLO Object Detection", ln=True, align='C')
+    pdf.cell(0, 5, f"Operator: {operator_id} | Trigger Source: Object Detection", ln=True, align='C')
     pdf.ln(3)
     
     nd = store_data.get("niosh", {})
@@ -367,7 +395,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "1. Object & Load Condition", ln=True)
     pdf.set_font("Arial", size=9)
-    pdf.cell(0, 5, f"YOLO Object Detected: {obj_name_str.title()}", ln=True)
+    pdf.cell(0, 5, f"Object Detected: {obj_name_str.title()}", ln=True)
     pdf.cell(0, 5, f"Actual Object Weight: {actual_weight:.1f} kg", ln=True)
     pdf.ln(2)
 
@@ -412,7 +440,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR WITH FALLBACK UNKNOWN OBJECT SENSOR ---
+# --- HYBRID VIDEO PROCESSOR WITH DUAL-DETECTION SENSOR ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -451,19 +479,23 @@ class REBAProcessor(VideoProcessorBase):
             l_wrist = [lm[15].x * w, lm[15].y * h]
             r_wrist = [lm[16].x * w, lm[16].y * h]
             l_index = [lm[19].x * w, lm[19].y * h]
+            r_index = [lm[20].x * w, lm[20].y * h]
+            l_pinky = [lm[17].x * w, lm[17].y * h]
+            r_pinky = [lm[18].x * w, lm[18].y * h]
 
             knee = [lm[25].x * w, lm[25].y * h]
             ankle = [lm[27].x * w, lm[27].y * h]
 
-            # Define hand region bounding box
+            # Collect active hand/finger landmark points
+            finger_landmarks = [l_wrist, r_wrist, l_index, r_index, l_pinky, r_pinky]
+
+            # Bounding box around hand points
             margin = int(w * 0.18)
             hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
             hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
             hx2 = int(min(w, max(l_wrist[0], r_wrist[0]) + margin))
             hy2 = int(min(h, max(l_wrist[1], r_wrist[1]) + margin))
             self.hand_box = (hx1, hy1, hx2, hy2)
-
-            cv2.rectangle(img, (hx1, hy1), (hx2, hy2), (255, 105, 180), 1, cv2.LINE_AA)
 
             # REBA Posture Angles
             t_score = score_trunk(calculate_angle(shld, hip, knee))
@@ -491,7 +523,7 @@ class REBAProcessor(VideoProcessorBase):
             d_cm = abs(shld[1] - l_wrist[1]) * scale_px_to_cm
             angle_deg = abs(180.0 - calculate_angle(shld, hip, knee))
 
-            # --- DUAL-ENGINE OBJECT DETECTION (YOLO + NON-COCO FALLBACK) ---
+            # --- DUAL-ENGINE OBJECT DETECTION (EVERY 5 FRAMES) ---
             if self.total_frames % 5 == 0:
                 try:
                     rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -499,7 +531,7 @@ class REBAProcessor(VideoProcessorBase):
                     found_obj = None
                     obj_box_draw = None
 
-                    # 1. First Pass: Check COCO YOLO dataset
+                    # 1. Primary Pass: Check COCO YOLO dataset
                     for box in yolo_res.boxes:
                         cls_id = int(box.cls[0])
                         if cls_id != 0:  # Ignore person class
@@ -510,14 +542,14 @@ class REBAProcessor(VideoProcessorBase):
                                 obj_box_draw = obj_b
                                 break
 
-                    # 2. Second Pass: Fallback Sensor for non-COCO / unknown objects
-                    if not found_obj and self.hand_box:
-                        has_unknown_obj, unknown_box = detect_generic_hand_object(img, self.hand_box)
-                        if has_unknown_obj:
+                    # 2. Secondary Pass: Finger-based foreign object sensor
+                    if not found_obj:
+                        has_unknown, unknown_b = detect_object_near_fingers(img, finger_landmarks, w, h)
+                        if has_unknown:
                             found_obj = "Unidentified Object"
-                            obj_box_draw = unknown_box
+                            obj_box_draw = unknown_b
 
-                    # Trigger NIOSH Calculation if ANY object is held
+                    # Update NIOSH and Global Store if any object is detected
                     if found_obj:
                         actual_wt = GLOBAL_STORE.get("actual_weight", 8.0)
                         niosh_res = compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_wt)
@@ -528,7 +560,7 @@ class REBAProcessor(VideoProcessorBase):
                         if obj_box_draw:
                             cv2.rectangle(img, (obj_box_draw[0], obj_box_draw[1]), 
                                           (obj_box_draw[2], obj_box_draw[3]), (0, 0, 255), 3)
-                            cv2.putText(img, f"LOAD: {found_obj.upper()} | RWL: {niosh_res['rwl']:.1f}kg", 
+                            cv2.putText(img, f"LOAD DETECTED: {found_obj.upper()} | RWL: {niosh_res['rwl']:.1f}kg", 
                                         (obj_box_draw[0], max(20, obj_box_draw[1]-10)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
                     else:
