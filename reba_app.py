@@ -112,13 +112,34 @@ def compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_weight, fm=0.95, cm=1.00):
         "rwl": rwl, "li": li, "status": status
     }
 
-# --- HELPER: BOUNDING BOX INTERSECTION ---
-def check_hand_object_intersection(hand_box, obj_box):
+# --- STRICT HAND GRASP VERIFICATION HELPER ---
+def is_object_grasped_by_hand(hand_box, obj_box):
+    """
+    Ensures an object is truly being held by the hand, filtering out background items (beds, chairs, walls).
+    """
     hx1, hy1, hx2, hy2 = hand_box
     ox1, oy1, ox2, oy2 = obj_box
+
+    # Calculate Intersection area
     ix1, iy1 = max(hx1, ox1), max(hy1, oy1)
     ix2, iy2 = min(hx2, ox2), min(hy2, oy2)
-    return (ix1 < ix2) and (iy1 < iy2)
+
+    if ix1 >= ix2 or iy1 >= iy2:
+        return False  # No overlap
+
+    intersection_area = (ix2 - ix1) * (iy2 - iy1)
+    hand_area = max(1, (hx2 - hx1) * (hy2 - hy1))
+    
+    ioh_ratio = intersection_area / hand_area
+
+    # Center point of active hand ROI
+    hand_center_x = (hx1 + hx2) / 2.0
+    hand_center_y = (hy1 + hy2) / 2.0
+
+    # Hand center MUST fall inside/touch object bounds AND overlap ratio >= 25%
+    hand_center_inside = (ox1 <= hand_center_x <= ox2) and (oy1 <= hand_center_y <= oy2)
+
+    return hand_center_inside and (ioh_ratio >= 0.25)
 
 # --- ADVANCED FINGER-BASED NON-COCO UNKNOWN OBJECT DETECTOR ---
 def detect_object_near_fingers(img, finger_pts, img_w, img_h):
@@ -131,8 +152,8 @@ def detect_object_near_fingers(img, finger_pts, img_w, img_h):
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     
-    margin_x = int(img_w * 0.22)
-    margin_y = int(img_h * 0.25)
+    margin_x = int(img_w * 0.08)  # Tightened ROI around fingers
+    margin_y = int(img_h * 0.08)
     
     fx1 = max(0, int(min_x - margin_x))
     fy1 = max(0, int(min_y - margin_y))
@@ -165,7 +186,7 @@ def detect_object_near_fingers(img, finger_pts, img_w, img_h):
     roi_area = (fx2 - fx1) * (fy2 - fy1)
     for c in contours:
         c_area = cv2.contourArea(c)
-        if c_area > (0.08 * roi_area):
+        if c_area > (0.12 * roi_area):  # Increased threshold to avoid noisy background blips
             x, y, w, h = cv2.boundingRect(c)
             abs_box = (fx1 + x, fy1 + y, fx1 + x + w, fy1 + y + h)
             return True, abs_box
@@ -293,7 +314,6 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     auto_zone = res_data.get("auto_zone", "Elbow to Knuckle")
     auto_reach = res_data.get("auto_reach", "Close")
     
-    # Use Persistent Latched Object for Report
     detected_obj = store_data.get("last_detected_object", res_data.get("detected_object", "None (Hands Free)"))
     
     max_limit = LIFTING_MATRIX[profile][auto_zone][auto_reach]
@@ -426,7 +446,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR WITH DETECT-LATCH MEMORY ---
+# --- HYBRID VIDEO PROCESSOR WITH STRICT HAND-GRASP FILTERING ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -474,11 +494,17 @@ class REBAProcessor(VideoProcessorBase):
 
             finger_landmarks = [l_wrist, r_wrist, l_index, r_index, l_pinky, r_pinky]
 
-            margin = int(w * 0.18)
-            hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
-            hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
-            hx2 = int(min(w, max(l_wrist[0], r_wrist[0]) + margin))
-            hy2 = int(min(h, max(l_wrist[1], r_wrist[1]) + margin))
+            # --- TIGHT PALM & FINGER HAND ROI ---
+            hand_xs = [l_wrist[0], r_wrist[0], l_index[0], r_index[0], l_pinky[0], r_pinky[0]]
+            hand_ys = [l_wrist[1], r_wrist[1], l_index[1], r_index[1], l_pinky[1], r_pinky[1]]
+
+            pad_x = int(w * 0.05)
+            pad_y = int(h * 0.05)
+            
+            hx1 = max(0, int(min(hand_xs) - pad_x))
+            hy1 = max(0, int(min(hand_ys) - pad_y))
+            hx2 = min(w, int(max(hand_xs) + pad_x))
+            hy2 = min(h, int(max(hand_ys) + pad_y))
             self.hand_box = (hx1, hy1, hx2, hy2)
 
             t_score = score_trunk(calculate_angle(shld, hip, knee))
@@ -509,18 +535,24 @@ class REBAProcessor(VideoProcessorBase):
             if self.total_frames % 5 == 0:
                 try:
                     rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    yolo_res = yolo_model(rgb_img, verbose=False, conf=0.15)[0]
+                    yolo_res = yolo_model(rgb_img, verbose=False, conf=0.25)[0]
                     found_obj = None
                     obj_box_draw = None
 
-                    # 1. Primary Pass: COCO YOLO
+                    # 1. Primary Pass: COCO YOLO (Excluding Person & Background Furniture)
                     for box in yolo_res.boxes:
                         cls_id = int(box.cls[0])
-                        if cls_id != 0:
+                        cls_name = yolo_model.names[cls_id]
+                        
+                        # Filter out person AND surrounding furniture classes
+                        ignored_classes = ["person", "bed", "chair", "couch", "dining table", "tv", "potted plant"]
+                        if cls_name not in ignored_classes:
                             b = box.xyxy[0].cpu().numpy().astype(int)
                             obj_b = (b[0], b[1], b[2], b[3])
-                            if self.hand_box and check_hand_object_intersection(self.hand_box, obj_b):
-                                found_obj = yolo_model.names[cls_id]
+                            
+                            # Verify object is actively held by hand
+                            if self.hand_box and is_object_grasped_by_hand(self.hand_box, obj_b):
+                                found_obj = cls_name
                                 obj_box_draw = obj_b
                                 break
 
@@ -538,7 +570,6 @@ class REBAProcessor(VideoProcessorBase):
                         
                         GLOBAL_STORE["niosh"] = niosh_res
                         GLOBAL_STORE["results"]["detected_object"] = found_obj
-                        # Persist latched object state to guarantee memory in PDF
                         GLOBAL_STORE["last_detected_object"] = found_obj
 
                         if obj_box_draw:
@@ -548,7 +579,6 @@ class REBAProcessor(VideoProcessorBase):
                                         (obj_box_draw[0], max(20, obj_box_draw[1]-10)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
                     else:
-                        # Fallback to latched detected object if previously captured in current run
                         latched = GLOBAL_STORE.get("last_detected_object", "None (Hands Free)")
                         GLOBAL_STORE["results"]["detected_object"] = latched
 
