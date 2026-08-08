@@ -11,12 +11,16 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from fpdf import FPDF
 from ultralytics import YOLO
 
-# --- LOAD LIGHTWEIGHT YOLOv8 NANO MODEL ---
+# --- LOAD & PRE-WARM YOLO MODEL (PREVENTS 5-SEC STARTUP LAG) ---
 @st.cache_resource
-def load_yolo():
-    return YOLO("yolov8n.pt")
+def load_and_warmup_yolo():
+    model = YOLO("yolov8n.pt")
+    # Pre-warm execution engine with a blank dummy image
+    dummy_img = np.zeros((480, 640, 3), dtype=np.uint8)
+    _ = model(dummy_img, verbose=False)
+    return model
 
-yolo_model = load_yolo()
+yolo_model = load_and_warmup_yolo()
 
 # --- GLOBAL PERSISTENT MEMORY ---
 @st.cache_resource
@@ -35,7 +39,7 @@ def get_global_store():
         "results": {
             "auto_zone": "Elbow to Knuckle",
             "auto_reach": "Close",
-            "detected_object": "None"
+            "detected_object": "None (Hands Free)"
         },
         "niosh": {
             "h_cm": 30.0,
@@ -63,7 +67,7 @@ def calculate_angle(a, b, c):
     angle = np.abs(radians * 180.0 / np.pi)
     return 360.0 - angle if angle > 180.0 else angle
 
-# --- FULL REBA SCORING ENGINE ---
+# --- REBA SCORING ENGINE ---
 def score_trunk(angle):
     dev = abs(180 - angle)
     if dev <= 5: return 1
@@ -96,26 +100,19 @@ def score_wrists(wrist_angle):
 def compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_weight, fm=0.95, cm=1.00):
     lc = 23.0  # Load Constant in kg
     
-    # 1. Horizontal Multiplier (HM = 25 / H)
     h_cm = max(25.0, min(63.0, h_cm))
     hm = 25.0 / h_cm
     
-    # 2. Vertical Multiplier (VM = 1 - 0.003 * |V - 75|)
     v_cm = max(0.0, min(175.0, v_cm))
     vm = max(0.0, 1.0 - (0.003 * abs(v_cm - 75.0)))
     
-    # 3. Distance Multiplier (DM = 0.82 + 4.5 / D)
     d_cm = max(25.0, min(175.0, d_cm))
     dm = 0.82 + (4.5 / d_cm)
     
-    # 4. Asymmetric Multiplier (AM = 1 - 0.0032 * A)
     angle_deg = max(0.0, min(135.0, angle_deg))
     am = max(0.0, 1.0 - (0.0032 * angle_deg))
     
-    # Recommended Weight Limit
     rwl = lc * hm * vm * dm * am * fm * cm
-    
-    # Lifting Index
     li = actual_weight / max(0.1, rwl)
     status = "SAFE (LI <= 1.0)" if li <= 1.0 else "UNSAFE / HIGH RISK (LI > 1.0)"
     
@@ -132,6 +129,35 @@ def check_hand_object_intersection(hand_box, obj_box):
     ix1, iy1 = max(hx1, ox1), max(hy1, oy1)
     ix2, iy2 = min(hx2, ox2), min(hy2, oy2)
     return (ix1 < ix2) and (iy1 < iy2)
+
+# --- NON-COCO UNKNOWN OBJECT SENSOR ---
+def detect_generic_hand_object(img, hand_box):
+    """Detects unidentified visual clutter/objects held in hand box even if not in COCO dataset."""
+    hx1, hy1, hx2, hy2 = hand_box
+    if (hx2 <= hx1) or (hy2 <= hy1):
+        return False, None
+
+    hand_roi = img[hy1:hy2, hx1:hx2]
+    if hand_roi.size == 0:
+        return False, None
+
+    # Convert to grayscale & run edge detection to find foreign objects
+    gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blur, 50, 150)
+    
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    roi_area = (hx2 - hx1) * (hy2 - hy1)
+    for c in contours:
+        c_area = cv2.contourArea(c)
+        # If object takes up between 5% and 60% of hand box, consider it an unidentified object
+        if 0.05 * roi_area < c_area < 0.60 * roi_area:
+            x, y, w, h = cv2.boundingRect(c)
+            abs_box = (hx1 + x, hy1 + y, hx1 + x + w, hy1 + y + h)
+            return True, abs_box
+            
+    return False, None
 
 # --- MANUAL WEIGHT LIFTING MATRIX ---
 LIFTING_MATRIX = {
@@ -253,7 +279,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     res_data = store_data.get("results", {})
     auto_zone = res_data.get("auto_zone", "Elbow to Knuckle")
     auto_reach = res_data.get("auto_reach", "Close")
-    detected_obj = res_data.get("detected_object", "None")
+    detected_obj = res_data.get("detected_object", "None (Hands Free)")
     
     max_limit = LIFTING_MATRIX[profile][auto_zone][auto_reach]
     status_str = "WITHIN SAFE ERGONOMIC LIMIT" if actual_weight <= max_limit else "EXCEEDS SAFE ERGONOMIC LIMIT"
@@ -336,7 +362,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.ln(3)
     
     nd = store_data.get("niosh", {})
-    obj_name_str = res_data.get("detected_object", "None")
+    obj_name_str = res_data.get("detected_object", "None (Hands Free)")
     
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, "1. Object & Load Condition", ln=True)
@@ -386,7 +412,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR WITH NIOSH INTEGRATION ---
+# --- HYBRID VIDEO PROCESSOR WITH FALLBACK UNKNOWN OBJECT SENSOR ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -402,7 +428,6 @@ class REBAProcessor(VideoProcessorBase):
             "Wrists": {"1-2": 0, "3-4": 0, "5+": 0}
         }
         self.total_frames = 0
-        self.last_detected_obj = "None (Hands Free)"
         self.hand_box = None
 
     def recv(self, frame):
@@ -430,7 +455,8 @@ class REBAProcessor(VideoProcessorBase):
             knee = [lm[25].x * w, lm[25].y * h]
             ankle = [lm[27].x * w, lm[27].y * h]
 
-            margin = int(w * 0.20)
+            # Define hand region bounding box
+            margin = int(w * 0.18)
             hx1 = int(max(0, min(l_wrist[0], r_wrist[0]) - margin))
             hy1 = int(max(0, min(l_wrist[1], r_wrist[1]) - margin))
             hx2 = int(min(w, max(l_wrist[0], r_wrist[0]) + margin))
@@ -439,7 +465,7 @@ class REBAProcessor(VideoProcessorBase):
 
             cv2.rectangle(img, (hx1, hy1), (hx2, hy2), (255, 105, 180), 1, cv2.LINE_AA)
 
-            # REBA Angles
+            # REBA Posture Angles
             t_score = score_trunk(calculate_angle(shld, hip, knee))
             a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
             n_score = score_neck(calculate_angle(nose, shld, hip))
@@ -458,53 +484,56 @@ class REBAProcessor(VideoProcessorBase):
             arm_reach_dist = abs(l_wrist[0] - shld[0])
             detected_reach = "Far" if arm_reach_dist > (w * 0.25) else "Close"
 
-            # --- DYNAMIC NIOSH PARAMETER CALCULATIONS ---
+            # Dynamic NIOSH spatial calculations
             scale_px_to_cm = 50.0 / max(1.0, abs(hip[1] - shld[1]))
-            
             h_cm = abs(l_wrist[0] - ankle[0]) * scale_px_to_cm
             v_cm = abs(ankle[1] - l_wrist[1]) * scale_px_to_cm
             d_cm = abs(shld[1] - l_wrist[1]) * scale_px_to_cm
             angle_deg = abs(180.0 - calculate_angle(shld, hip, knee))
 
-            # --- YOLO OBJECT DETECT & NIOSH TRIGGER (EVERY 5 FRAMES) ---
+            # --- DUAL-ENGINE OBJECT DETECTION (YOLO + NON-COCO FALLBACK) ---
             if self.total_frames % 5 == 0:
                 try:
                     rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                     yolo_res = yolo_model(rgb_img, verbose=False, conf=0.15)[0]
-                    found_obj_on_hand = "None (Hands Free)"
-                    
+                    found_obj = None
+                    obj_box_draw = None
+
+                    # 1. First Pass: Check COCO YOLO dataset
                     for box in yolo_res.boxes:
                         cls_id = int(box.cls[0])
-                        if cls_id != 0:  # Exclude 'person' class
+                        if cls_id != 0:  # Ignore person class
                             b = box.xyxy[0].cpu().numpy().astype(int)
-                            obj_box = (b[0], b[1], b[2], b[3])
-                            
-                            # Draw blue debug box for detected objects
-                            cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (255, 0, 0), 1)
-                            
-                            if self.hand_box and check_hand_object_intersection(self.hand_box, obj_box):
-                                raw_name = yolo_model.names[cls_id]
-                                found_obj_on_hand = f"{raw_name} (Lifted)"
-                                
-                                # TRIGGER NIOSH CALCULATION ON DETECTED OBJECT
-                                actual_wt = GLOBAL_STORE.get("actual_weight", 8.0)
-                                niosh_res = compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_wt)
-                                
-                                # DIRECT GLOBAL STORE WRITE FOR BOTH APP & PDF THREADS
-                                GLOBAL_STORE["niosh"] = niosh_res
-                                GLOBAL_STORE["results"]["detected_object"] = raw_name
-
-                                # Highlight object in RED when on hand
-                                cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 3)
-                                cv2.putText(img, f"LOAD DETECTED: {raw_name.upper()} | RWL: {niosh_res['rwl']:.1f}kg", 
-                                            (b[0], max(20, b[1]-10)),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+                            obj_b = (b[0], b[1], b[2], b[3])
+                            if self.hand_box and check_hand_object_intersection(self.hand_box, obj_b):
+                                found_obj = yolo_model.names[cls_id]
+                                obj_box_draw = obj_b
                                 break
 
-                    self.last_detected_obj = found_obj_on_hand
-                    # Update global store if hands are free
-                    if found_obj_on_hand == "None (Hands Free)":
+                    # 2. Second Pass: Fallback Sensor for non-COCO / unknown objects
+                    if not found_obj and self.hand_box:
+                        has_unknown_obj, unknown_box = detect_generic_hand_object(img, self.hand_box)
+                        if has_unknown_obj:
+                            found_obj = "Unidentified Object"
+                            obj_box_draw = unknown_box
+
+                    # Trigger NIOSH Calculation if ANY object is held
+                    if found_obj:
+                        actual_wt = GLOBAL_STORE.get("actual_weight", 8.0)
+                        niosh_res = compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_wt)
+                        
+                        GLOBAL_STORE["niosh"] = niosh_res
+                        GLOBAL_STORE["results"]["detected_object"] = found_obj
+
+                        if obj_box_draw:
+                            cv2.rectangle(img, (obj_box_draw[0], obj_box_draw[1]), 
+                                          (obj_box_draw[2], obj_box_draw[3]), (0, 0, 255), 3)
+                            cv2.putText(img, f"LOAD: {found_obj.upper()} | RWL: {niosh_res['rwl']:.1f}kg", 
+                                        (obj_box_draw[0], max(20, obj_box_draw[1]-10)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
+                    else:
                         GLOBAL_STORE["results"]["detected_object"] = "None (Hands Free)"
+
                 except Exception:
                     pass
 
@@ -559,7 +588,7 @@ m_col1, m_col2, m_col3, m_col4 = st.columns(4)
 m_col1.metric("Overall REBA Score", GLOBAL_STORE["overall_score"])
 m_col2.metric("Total Duration (s)", f"{GLOBAL_STORE['total_duration']:.1f}")
 res_data = GLOBAL_STORE["results"]
-m_col3.metric("Object on Hand", res_data.get("detected_object", "None").title())
+m_col3.metric("Object on Hand", res_data.get("detected_object", "None (Hands Free)").title())
 
 niosh_data = GLOBAL_STORE.get("niosh", {})
 m_col4.metric("NIOSH RWL / LI", f"{niosh_data.get('rwl', 0.0):.1f} kg (LI: {niosh_data.get('li', 0.0):.2f})")
