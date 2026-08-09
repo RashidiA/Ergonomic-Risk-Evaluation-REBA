@@ -26,9 +26,11 @@ yolo_model = load_and_warmup_yolo()
 def get_global_store():
     return {
         "frame": None,
+        "peak_frame": None,          # Stores snapshot of the highest REBA posture frame
+        "peak_reba_score": 0,        # Tracks maximum score achieved
         "total_duration": 0.0,
-        "overall_score": 3,
-        "last_detected_object": "None (Hands Free)",  # Persistent Latch
+        "overall_score": 1,
+        "last_detected_object": "None (Hands Free)",
         "breakdown": {
             "Trunk": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
             "Neck": {"1-2": 100.0, "3-4": 0.0, "5+": 0.0},
@@ -114,34 +116,26 @@ def compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_weight, fm=0.95, cm=1.00):
 
 # --- STRICT HAND GRASP VERIFICATION HELPER ---
 def is_object_grasped_by_hand(hand_box, obj_box):
-    """
-    Ensures an object is truly being held by the hand, filtering out background items (beds, chairs, walls).
-    """
     hx1, hy1, hx2, hy2 = hand_box
     ox1, oy1, ox2, oy2 = obj_box
 
-    # Calculate Intersection area
     ix1, iy1 = max(hx1, ox1), max(hy1, oy1)
     ix2, iy2 = min(hx2, ox2), min(hy2, oy2)
 
     if ix1 >= ix2 or iy1 >= iy2:
-        return False  # No overlap
+        return False
 
     intersection_area = (ix2 - ix1) * (iy2 - iy1)
     hand_area = max(1, (hx2 - hx1) * (hy2 - hy1))
-    
     ioh_ratio = intersection_area / hand_area
 
-    # Center point of active hand ROI
     hand_center_x = (hx1 + hx2) / 2.0
     hand_center_y = (hy1 + hy2) / 2.0
 
-    # Hand center MUST fall inside/touch object bounds AND overlap ratio >= 25%
     hand_center_inside = (ox1 <= hand_center_x <= ox2) and (oy1 <= hand_center_y <= oy2)
-
     return hand_center_inside and (ioh_ratio >= 0.25)
 
-# --- ADVANCED FINGER-BASED NON-COCO UNKNOWN OBJECT DETECTOR ---
+# --- ADVANCED FINGER-BASED UNKNOWN OBJECT DETECTOR ---
 def detect_object_near_fingers(img, finger_pts, img_w, img_h):
     if not finger_pts:
         return False, None
@@ -152,7 +146,7 @@ def detect_object_near_fingers(img, finger_pts, img_w, img_h):
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     
-    margin_x = int(img_w * 0.08)  # Tightened ROI around fingers
+    margin_x = int(img_w * 0.08)
     margin_y = int(img_h * 0.08)
     
     fx1 = max(0, int(min_x - margin_x))
@@ -164,20 +158,16 @@ def detect_object_near_fingers(img, finger_pts, img_w, img_h):
     if roi.size == 0 or (fx2 - fx1) < 20 or (fy2 - fy1) < 20:
         return False, None
 
-    # 1. Skin tone filtering (HSV space)
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     lower_skin = np.array([0, 20, 70], dtype=np.uint8)
     upper_skin = np.array([20, 255, 255], dtype=np.uint8)
     skin_mask = cv2.inRange(hsv, lower_skin, upper_skin)
     non_skin_mask = cv2.bitwise_not(skin_mask)
 
-    # 2. Thresholding non-skin visual structures (Otsu Adaptive)
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     _, otsu_thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
     combined = cv2.bitwise_and(otsu_thresh, non_skin_mask)
-    
-    # 3. Morphological closing to fill object solid shapes
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     closed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
 
@@ -186,7 +176,7 @@ def detect_object_near_fingers(img, finger_pts, img_w, img_h):
     roi_area = (fx2 - fx1) * (fy2 - fy1)
     for c in contours:
         c_area = cv2.contourArea(c)
-        if c_area > (0.12 * roi_area):  # Increased threshold to avoid noisy background blips
+        if c_area > (0.12 * roi_area):
             x, y, w, h = cv2.boundingRect(c)
             abs_box = (fx1 + x, fy1 + y, fx1 + x + w, fy1 + y + h)
             return True, abs_box
@@ -238,12 +228,12 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- 3-PAGE PDF GENERATOR ---
+# --- 3-PAGE PDF GENERATOR WITH PEAK POSTURE SNAPSHOT ---
 def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=False)
     
-    # PAGE 1: REBA POSTURE AUDIT
+    # ================= PAGE 1: REBA POSTURE AUDIT =================
     pdf.add_page()
     pdf.set_font("Arial", 'B', 15)
     pdf.cell(0, 8, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
@@ -251,9 +241,9 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     dur = store_data.get("total_duration", 0.0)
     pdf.cell(0, 5, f"Operator: {operator_id} | Total Duration: {dur:.1f} sec", ln=True, align='C')
     
-    score = store_data.get("overall_score", 3)
+    score = store_data.get("overall_score", 1)
     pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 7, f"Evaluated Overall REBA Score: {score}", ln=True, align='C')
+    pdf.cell(0, 7, f"Peak Evaluated REBA Score: {score}", ln=True, align='C')
     pdf.ln(2)
     
     pdf.set_font("Arial", 'B', 10)
@@ -273,14 +263,14 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         pdf.cell(45, 5, f"{stats['3-4']:.1f}%", border=1, align='C')
         pdf.cell(45, 5, f"{stats['5+']:.1f}%", border=1, align='C', ln=True)
         
-    pdf.ln(3)
+    pdf.ln(2)
     
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 5, "REBA Standard Action & Risk Table", ln=True)
     pdf.set_font("Arial", 'B', 8.5)
-    pdf.cell(40, 5, "REBA Score", border=1, align='C')
-    pdf.cell(60, 5, "Risk level", border=1, align='C')
-    pdf.cell(85, 5, "Action", border=1, align='C', ln=True)
+    pdf.cell(35, 5, "REBA Score", border=1, align='C')
+    pdf.cell(50, 5, "Risk Level", border=1, align='C')
+    pdf.cell(105, 5, "Action Required", border=1, align='C', ln=True)
     
     pdf.set_font("Arial", size=8.5)
     for r_score, r_level, r_action in REBA_ACTION_TABLE:
@@ -294,15 +284,37 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         fill_flag = is_match
         if fill_flag: pdf.set_fill_color(255, 255, 0)
 
-        pdf.cell(40, 5, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
-        pdf.cell(60, 5, r_level, border=1, fill=fill_flag)
-        pdf.cell(85, 5, r_action, border=1, ln=True, fill=fill_flag)
-        
-    pdf.set_y(-15)
+        pdf.cell(35, 5, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
+        pdf.cell(50, 5, r_level, border=1, fill=fill_flag)
+        pdf.cell(105, 5, r_action, border=1, ln=True, fill=fill_flag)
+
+    pdf.ln(3)
+
+    # --- EMBED PEAK REBA POSTURE SNAPSHOT ---
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 5, "Peak REBA Posture Snapshot (Worst Observed Risk Point)", ln=True)
+    
+    peak_img = store_data.get("peak_frame")
+    tmp_peak_path = None
+
+    if peak_img is not None:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            # Convert BGR to RGB for correct PDF coloring
+            cv2.imwrite(tmp.name, peak_img)
+            tmp_peak_path = tmp.name
+            pdf.image(tmp_peak_path, x=45, y=pdf.get_y() + 2, w=120)
+    else:
+        pdf.set_font("Arial", 'I', 8.5)
+        pdf.cell(0, 5, "No video snapshot recorded.", ln=True)
+
+    if tmp_peak_path and os.path.exists(tmp_peak_path):
+        os.unlink(tmp_peak_path)
+
+    pdf.set_y(-12)
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 1 of 3 - REBA Posture Risk Evaluation", align='L')
 
-    # PAGE 2: MANUAL MATERIAL HANDLING AUDIT
+    # ================= PAGE 2: MANUAL MATERIAL HANDLING AUDIT =================
     pdf.add_page()
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
@@ -313,7 +325,6 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     res_data = store_data.get("results", {})
     auto_zone = res_data.get("auto_zone", "Elbow to Knuckle")
     auto_reach = res_data.get("auto_reach", "Close")
-    
     detected_obj = store_data.get("last_detected_object", res_data.get("detected_object", "None (Hands Free)"))
     
     max_limit = LIFTING_MATRIX[profile][auto_zone][auto_reach]
@@ -383,11 +394,11 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     if tmp_path and os.path.exists(tmp_path):
         os.unlink(tmp_path)
 
-    pdf.set_y(-15)
+    pdf.set_y(-12)
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 2 of 3 - Recommended Weight Limits Matrix Standard", align='L')
 
-    # PAGE 3: NIOSH LIFTING EQUATION AUDIT
+    # ================= PAGE 3: NIOSH LIFTING EQUATION AUDIT =================
     pdf.add_page()
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, "NIOSH LIFTING EQUATION ASSESSMENT", ln=True, align='C')
@@ -440,13 +451,13 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf.set_font("Arial", size=8.5)
     pdf.multi_cell(0, 4.5, "Engineering Notes:\n- LI <= 1.0 indicates task is safe for most healthy industrial workers.\n- LI > 1.0 indicates increased risk of lower back strain; ergonomic redesign or mechanical lift assist is recommended.")
 
-    pdf.set_y(-15)
+    pdf.set_y(-12)
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 3 of 3 - NIOSH Lifting Equation Assessment Report", align='L')
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR WITH STRICT HAND-GRASP FILTERING ---
+# --- HYBRID VIDEO PROCESSOR WITH PEAK FRAME RECORDING ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -494,7 +505,7 @@ class REBAProcessor(VideoProcessorBase):
 
             finger_landmarks = [l_wrist, r_wrist, l_index, r_index, l_pinky, r_pinky]
 
-            # --- TIGHT PALM & FINGER HAND ROI ---
+            # --- TIGHT HAND ROI ---
             hand_xs = [l_wrist[0], r_wrist[0], l_index[0], r_index[0], l_pinky[0], r_pinky[0]]
             hand_ys = [l_wrist[1], r_wrist[1], l_index[1], r_index[1], l_pinky[1], r_pinky[1]]
 
@@ -539,31 +550,29 @@ class REBAProcessor(VideoProcessorBase):
                     found_obj = None
                     obj_box_draw = None
 
-                    # 1. Primary Pass: COCO YOLO (Excluding Person & Background Furniture)
+                    # Primary Pass: COCO YOLO
                     for box in yolo_res.boxes:
                         cls_id = int(box.cls[0])
                         cls_name = yolo_model.names[cls_id]
                         
-                        # Filter out person AND surrounding furniture classes
                         ignored_classes = ["person", "bed", "chair", "couch", "dining table", "tv", "potted plant"]
                         if cls_name not in ignored_classes:
                             b = box.xyxy[0].cpu().numpy().astype(int)
                             obj_b = (b[0], b[1], b[2], b[3])
                             
-                            # Verify object is actively held by hand
                             if self.hand_box and is_object_grasped_by_hand(self.hand_box, obj_b):
                                 found_obj = cls_name
                                 obj_box_draw = obj_b
                                 break
 
-                    # 2. Secondary Pass: Finger-based foreign object sensor
+                    # Secondary Pass: Non-COCO Unknown Sensor
                     if not found_obj:
                         has_unknown, unknown_b = detect_object_near_fingers(img, finger_landmarks, w, h)
                         if has_unknown:
                             found_obj = "Unidentified Object"
                             obj_box_draw = unknown_b
 
-                    # --- LATCHING LOGIC FOR REPORT PERSISTENCE ---
+                    # --- LATCHING LOGIC ---
                     if found_obj:
                         actual_wt = GLOBAL_STORE.get("actual_weight", 8.0)
                         niosh_res = compute_niosh(h_cm, v_cm, d_cm, angle_deg, actual_wt)
@@ -600,16 +609,21 @@ class REBAProcessor(VideoProcessorBase):
                 } for name in ["Trunk", "Neck", "Upper Arm", "Legs", "Wrists"]
             }
 
+            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            cv2.putText(img, f"REBA Score: {total_reba}", (10, 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+            # --- CAPTURE PEAK REBA FRAME SNAPSHOT ---
+            if total_reba >= GLOBAL_STORE.get("peak_reba_score", 0):
+                GLOBAL_STORE["peak_reba_score"] = total_reba
+                GLOBAL_STORE["peak_frame"] = img.copy()
+
             GLOBAL_STORE["total_duration"] = time.time() - self.start_time
-            GLOBAL_STORE["overall_score"] = total_reba
+            GLOBAL_STORE["overall_score"] = max(GLOBAL_STORE["overall_score"], total_reba)
             GLOBAL_STORE["breakdown"] = breakdown_pct
             GLOBAL_STORE["results"]["auto_zone"] = detected_zone
             GLOBAL_STORE["results"]["auto_reach"] = detected_reach
             GLOBAL_STORE["frame"] = img.copy()
-
-            mp_drawing.draw_landmarks(img, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            cv2.putText(img, f"REBA Score: {total_reba}", (10, 40), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -624,10 +638,13 @@ with st.sidebar:
     actual_wt = st.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
     GLOBAL_STORE["actual_weight"] = actual_wt
 
-    if st.button("🔄 Reset Object Latch Memory"):
+    if st.button("🔄 Reset Audit Session & Snapshot Memory"):
         GLOBAL_STORE["last_detected_object"] = "None (Hands Free)"
         GLOBAL_STORE["results"]["detected_object"] = "None (Hands Free)"
-        st.success("Object detection state reset to Hands Free!")
+        GLOBAL_STORE["peak_reba_score"] = 0
+        GLOBAL_STORE["overall_score"] = 1
+        GLOBAL_STORE["peak_frame"] = None
+        st.success("Session state & peak snapshot reset!")
 
 ctx = webrtc_streamer(
     key="reba-niosh-ai",
@@ -638,7 +655,7 @@ ctx = webrtc_streamer(
 
 st.markdown("### Live / Last Captured Metrics")
 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-m_col1.metric("Overall REBA Score", GLOBAL_STORE["overall_score"])
+m_col1.metric("Peak REBA Score", GLOBAL_STORE["overall_score"])
 m_col2.metric("Total Duration (s)", f"{GLOBAL_STORE['total_duration']:.1f}")
 
 res_data = GLOBAL_STORE["results"]
