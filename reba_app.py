@@ -40,8 +40,6 @@ html_code = f"""
   <div class="container">
     <video id="webcam" autoplay playsinline></video>
     <canvas id="output_canvas"></canvas>
-    <!-- Hidden Canvas with precise full-height dimensions for complete diagram vector rendering -->
-    <canvas id="diagram_canvas" width="500" height="350" style="display:none;"></canvas>
   </div>
 
   <div class="controls">
@@ -62,6 +60,9 @@ html_code = f"""
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
     const toggleBtn = document.getElementById('toggleBtn');
+
+    // Direct GitHub Raw URL to your assets image
+    const GITHUB_ASSET_URL = "https://raw.githubusercontent.com/RashidiA/Ergonomic-Risk-Evaluation-REBA/main/assets/recommended_weight.png";
 
     let objectModel = null;
     let currentObject = "Unidentified Object";
@@ -98,102 +99,22 @@ html_code = f"""
       objectModel = model;
     }});
 
-    // High-resolution Vector Canvas Engine to match 2nd attachment exactly
-    function generateDiagramBase64() {{
-      const dCanvas = document.getElementById('diagram_canvas');
-      const ctx = dCanvas.getContext('2d');
-      
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, 500, 350);
-
-      ctx.fillStyle = "#333333";
-      ctx.font = "bold 13px Helvetica, Arial";
-      ctx.fillText("Female", 140, 30);
-      ctx.fillText("Male", 320, 30);
-
-      const zoneBoxes = [
-        {{ labelF: "3 kg | 7 kg", labelM: "10 kg | 5 kg", y: 45, h: 42, name: "Shoulder height" }},
-        {{ labelF: "7 kg | 13 kg", labelM: "20 kg | 10 kg", y: 92, h: 42, name: "Elbow height" }},
-        {{ labelF: "10 kg | 16 kg", labelM: "25 kg | 15 kg", y: 139, h: 42, name: "Knuckle height" }},
-        {{ labelF: "7 kg | 13 kg", labelM: "20 kg | 10 kg", y: 186, h: 42, name: "" }},
-        {{ labelF: "3 kg | 7 kg", labelM: "10 kg | 5 kg", y: 233, h: 42, name: "Mid lower leg height" }}
-      ];
-
-      // Draw standard Grid Containers
-      zoneBoxes.forEach(z => {{
-        ctx.fillStyle = "#fafafa";
-        ctx.strokeStyle = "#8d8d8d";
-        ctx.lineWidth = 1.5;
-
-        // Female Box
-        ctx.fillRect(100, z.y, 110, z.h);
-        ctx.strokeRect(100, z.y, 110, z.h);
-
-        // Male Box
-        ctx.fillRect(270, z.y, 110, z.h);
-        ctx.strokeRect(270, z.y, 110, z.h);
-
-        ctx.fillStyle = "#222222";
-        ctx.font = "bold 11px Arial";
-        ctx.fillText(z.labelF, 128, z.y + z.h/2 + 4);
-        ctx.fillText(z.labelM, 298, z.y + z.h/2 + 4);
-
-        if (z.name) {{
-          ctx.fillStyle = "#555555";
-          ctx.font = "10px Arial";
-          ctx.fillText(z.name, 213, z.y + 14);
-        }}
+    // Helper to asynchronously convert hosted GitHub PNG image into Base64 format for jsPDF
+    function getBase64ImageFromUrl(url) {{
+      return new Promise((resolve, reject) => {{
+        const img = new Image();
+        img.crossOrigin = "Anonymous";
+        img.onload = () => {{
+          const canvas = document.createElement("canvas");
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          resolve(canvas.toDataURL("image/png"));
+        }};
+        img.onerror = (error) => reject(error);
+        img.src = url;
       }});
-
-      // Draw Human Vector Mannequins (Female on Left, Male on Right)
-      function drawMannequin(cx, isFemale) {{
-        ctx.strokeStyle = "#807060";
-        ctx.fillStyle = "#c2a68c";
-        ctx.lineWidth = 2;
-
-        // Head
-        ctx.beginPath();
-        ctx.arc(cx, 55, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        // Torso
-        ctx.beginPath();
-        ctx.moveTo(cx, 67);
-        ctx.lineTo(cx, 160);
-        ctx.lineWidth = isFemale ? 6 : 8;
-        ctx.stroke();
-
-        // Arms
-        ctx.beginPath();
-        ctx.moveTo(cx, 80);
-        ctx.lineTo(cx - 15, 120);
-        ctx.lineTo(cx + 10, 140);
-        ctx.lineWidth = 3;
-        ctx.stroke();
-
-        // Legs down to ground
-        ctx.beginPath();
-        ctx.moveTo(cx, 160);
-        ctx.lineTo(cx - 10, 280);
-        ctx.moveTo(cx, 160);
-        ctx.lineTo(cx + 10, 280);
-        ctx.lineWidth = 4;
-        ctx.stroke();
-      }}
-
-      drawMannequin(70, true);
-      drawMannequin(410, false);
-
-      // Baseline Ground Line across the entire width
-      ctx.beginPath();
-      ctx.moveTo(40, 280);
-      ctx.lineTo(460, 280);
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = "#1a1a1a";
-      ctx.stroke();
-
-      return dCanvas.toDataURL('image/jpeg', 0.95);
     }}
 
     function resetSessionMemory() {{
@@ -367,12 +288,20 @@ html_code = f"""
       return ((count / totalFramesRecorded) * 100).toFixed(1) + "%";
     }}
 
-    function downloadPdfReport() {{
+    async function downloadPdfReport() {{
       const {{ jsPDF }} = window.jspdf;
       const doc = new jsPDF();
 
       let imgToEmbed = peakFrameBase64 || lastValidCanvasFrame;
       let dur = isAnalyzing ? ((Date.now() - startTime) / 1000.0).toFixed(1) : (sessionDuration || "12.4");
+
+      // Fetch recommended_weight.png asset asynchronously
+      let githubDiagramBase64 = "";
+      try {{
+        githubDiagramBase64 = await getBase64ImageFromUrl(GITHUB_ASSET_URL);
+      }} catch (e) {{
+        console.warn("Could not load image directly from GitHub asset:", e);
+      }}
 
       // PAGE 1: REBA POSTURE AUDIT REPORT
       doc.setFont("Helvetica", "bold");
@@ -562,14 +491,19 @@ html_code = f"""
         yPos += 5;
       }});
 
-      // Insert Full Ergonomic Diagram (Adjusted height parameter prevents truncation)
+      // Embed recommended_weight.png direct from GitHub asset
       yPos += 6;
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(10);
       doc.text("Ergonomic Lifting Reference Diagram", 10, yPos); yPos += 6;
 
-      let diagramBase64 = generateDiagramBase64();
-      doc.addImage(diagramBase64, 'JPEG', 10, yPos, 90, 63);
+      if (githubDiagramBase64) {{
+        doc.addImage(githubDiagramBase64, 'PNG', 10, yPos, 90, 65);
+      }} else {{
+        doc.rect(10, yPos, 90, 65);
+        doc.setFontSize(8);
+        doc.text("[ recommended_weight.png ]", 55, yPos + 32, {{ align: "center" }});
+      }}
 
       let recX = 108;
       let recY = yPos + 10;
