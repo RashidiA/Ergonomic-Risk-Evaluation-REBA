@@ -6,7 +6,7 @@ import tempfile
 import os
 from fpdf import FPDF
 
-st.set_page_config(page_title="Edge-AI Ergonomic Risk Evaluator", layout="wide")
+st.set_page_config(page_title="Edge-AI REBA & Ergonomic Auditor", layout="wide")
 
 # --- MANUAL MATERIAL HANDLING MATRIX ---
 LIFTING_MATRIX = {
@@ -34,7 +34,7 @@ REBA_ACTION_TABLE = [
     ("11-15", "Very high", "Necessary urgent")
 ]
 
-# --- 3-PAGE PDF GENERATOR ---
+# --- 3-PAGE PDF REPORT ENGINE ---
 def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=False)
@@ -43,19 +43,20 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     angles = audit_data.get("peak_angles", {})
     dur = float(audit_data.get("total_duration", 0.0))
     pct_high_risk = float(audit_data.get("pct_high_risk", 0.0))
+    obj_detected = audit_data.get("object_detected", "Not Detected")
 
-    # ================= PAGE 1: REBA POSTURE AUDIT =================
+    # ================= PAGE 1: REBA POSTURE & OBJECT DETECTION =================
     pdf.add_page()
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 7, "REBA POSTURE AUDIT REPORT (EDGE AI ENGINE)", ln=True, align='C')
     pdf.set_font("Arial", 'B', 9.5)
-    pdf.cell(0, 5, f"Operator: {operator_id} | Total Duration: {dur:.1f} sec | High Risk Exposure: {pct_high_risk:.1f}%", ln=True, align='C')
+    pdf.cell(0, 5, f"Operator: {operator_id} | Session Duration: {dur:.1f}s | High Risk Exposure (Score >= 8): {pct_high_risk:.1f}%", ln=True, align='C')
     
     pdf.set_font("Arial", 'B', 10.5)
-    pdf.cell(0, 6, f"Peak Evaluated REBA Score: {score}", ln=True, align='C')
+    pdf.cell(0, 6, f"Peak Evaluated REBA Score: {score} | Object Detected: {obj_detected}", ln=True, align='C')
     pdf.ln(2)
 
-    # Action Table
+    # REBA Action Table
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(0, 4.5, "REBA Standard Action & Risk Assessment Table", ln=True)
     pdf.set_font("Arial", 'B', 8)
@@ -81,7 +82,7 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
 
     pdf.ln(3)
 
-    # Image + Angle breakdown
+    # Embed Peak Image
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(0, 4.5, "Peak REBA Posture Snapshot & Step-by-Step Joint Angles", ln=True)
     curr_y = pdf.get_y() + 1
@@ -97,10 +98,10 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
                 tmp.write(data)
                 tmp_img_path = tmp.name
                 pdf.image(tmp_img_path, x=10, y=curr_y, w=85)
-        except Exception as e:
+        except Exception:
             pass
 
-    # REBA Steps Table
+    # Angles Breakdown Table
     pdf.set_xy(100, curr_y)
     pdf.set_font("Arial", 'B', 8)
     pdf.cell(40, 4.5, "REBA Step / Joint", border=1, align='C')
@@ -130,12 +131,12 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf.set_font("Arial", 'I', 8)
     pdf.cell(0, 10, "Page 1 of 3 - REBA Edge AI Posture Evaluation", align='L')
 
-    # ================= PAGE 2: MANUAL HANDLING AUDIT =================
+    # ================= PAGE 2: MANUAL MATERIAL HANDLING AUDIT =================
     pdf.add_page()
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 8, "MANUAL WEIGHT LIFTING AUDIT", ln=True, align='C')
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 5, f"Operator: {operator_id} | Evaluation Profile: {profile}", ln=True, align='C')
+    pdf.cell(0, 5, f"Operator: {operator_id} | Profile: {profile}", ln=True, align='C')
     pdf.ln(3)
 
     auto_zone = audit_data.get("auto_zone", "Elbow to Knuckle")
@@ -153,7 +154,7 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf.cell(0, 6, f"SAFETY STATUS: {status_str}", ln=True)
     pdf.ln(3)
 
-    # Reference Matrix
+    # Reference Table
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(0, 6, f"Recommended Weight Matrix Reference ({profile})", ln=True)
     pdf.set_font("Arial", 'B', 9)
@@ -207,16 +208,16 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
 
     return bytes(pdf.output())
 
-# --- UI CONTROLS ---
-st.title("⚡ Edge-AI Ergonomic Risk Evaluator")
-st.caption("🚀 Real-Time Client-Side Pose Analysis (With AR Overlays, Session Analytics, and PDF Report)")
+# --- STREAMLIT UI ---
+st.title("⚡ Edge-AI Client-Side REBA & Object Detection Auditor")
+st.caption("🚀 100% Client-Side Real-Time Pose estimation, AR Skeleton, Object Detection & Risk Analytics")
 
 sidebar = st.sidebar
 op_id = sidebar.text_input("Operator ID", "OP-001")
 profile = sidebar.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
 actual_wt = sidebar.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
 
-# --- CLIENT-SIDE HTML/JS WITH FULL AR DRAWING & TIMED SESSION ANALYSIS ---
+# --- CLIENT-SIDE ENGINE (MediaPipe Pose + COCO-SSD Object Detector) ---
 html_code = """
 <!DOCTYPE html>
 <html>
@@ -224,12 +225,16 @@ html_code = """
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+  <!-- COCO-SSD for Client-side Object Detection -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
   <style>
     .container { position: relative; width: 100%; max-width: 640px; margin: auto; }
     video { display: none; }
     canvas { width: 100%; height: auto; border-radius: 8px; background: #000; }
-    .controls { display: flex; gap: 10px; margin-top: 10px; justify-content: center; }
-    button { padding: 10px 18px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white; }
+    .controls { display: flex; gap: 12px; margin-top: 10px; justify-content: center; }
+    button { padding: 10px 20px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white; font-size: 14px; }
     .btn-start { background-color: #28a745; }
     .btn-stop { background-color: #dc3545; }
     .metrics { margin-top: 12px; font-family: sans-serif; display: flex; gap: 10px; }
@@ -251,6 +256,7 @@ html_code = """
     <div class="card"><strong>Live REBA</strong><h2 id="live_score">1</h2></div>
     <div class="card"><strong>Peak REBA</strong><h2 id="peak_score">1</h2></div>
     <div class="card"><strong>High Risk %</strong><h2 id="high_risk_pct">0%</h2></div>
+    <div class="card"><strong>Object Detected</strong><h2 id="object_detected" style="font-size: 18px;">None</h2></div>
     <div class="card"><strong>Timer</strong><h2 id="timer">0.0s</h2></div>
   </div>
 
@@ -259,6 +265,9 @@ html_code = """
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
     
+    let objectModel = null;
+    let detectedObjects = [];
+    
     let isAnalyzing = false;
     let startTime = 0;
     let totalFramesRecorded = 0;
@@ -266,6 +275,12 @@ html_code = """
     let peakRebaScore = 0;
     let peakFrameBase64 = "";
     let peakAngles = {};
+
+    // Load COCO-SSD Object Detection Model on Edge
+    cocoSsd.load().then(model => {
+      objectModel = model;
+      console.log("Edge Object Detection Model Loaded");
+    });
 
     function startAnalysis() {
       isAnalyzing = true;
@@ -281,6 +296,7 @@ html_code = """
 
       const duration = (Date.now() - startTime) / 1000.0;
       const pctHighRisk = totalFramesRecorded > 0 ? (highRiskFrames / totalFramesRecorded) * 100.0 : 0.0;
+      const mainObj = detectedObjects.length > 0 ? detectedObjects[0] : "Box / Material";
 
       const payload = {
         peak_reba_score: peakRebaScore,
@@ -289,16 +305,17 @@ html_code = """
         auto_zone: "Elbow to Knuckle",
         auto_reach: "Close",
         total_duration: duration,
-        pct_high_risk: pctHighRisk
+        pct_high_risk: pctHighRisk,
+        object_detected: mainObj
       };
 
-      // Direct postMessage transmission
+      // Send to Streamlit Parent Session via Web API
       window.parent.postMessage({
         type: 'REBA_DATA_SYNC',
         payload: payload
       }, '*');
-      
-      alert("Session saved! You can now generate the PDF below.");
+
+      alert("Session completed! Download your 3-Page PDF Report below.");
     }
 
     function calcAngle(a, b, c) {
@@ -307,7 +324,7 @@ html_code = """
       return angle > 180.0 ? 360.0 - angle : angle;
     }
 
-    function onResults(results) {
+    async function onResults(results) {
       canvasElement.width = videoElement.videoWidth || 640;
       canvasElement.height = videoElement.videoHeight || 480;
 
@@ -315,9 +332,29 @@ html_code = """
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
+      // --- 1. EDGE OBJECT DETECTION BOUNDING BOXES ---
+      if (objectModel && videoElement.readyState === 4) {
+        try {
+          const predictions = await objectModel.detect(videoElement);
+          detectedObjects = [];
+          predictions.forEach(pred => {
+            if (pred.score > 0.4 && pred.class !== 'person') {
+              detectedObjects.push(pred.class);
+              canvasCtx.strokeStyle = '#00FFFF';
+              canvasCtx.lineWidth = 2;
+              canvasCtx.strokeRect(pred.bbox[0], pred.bbox[1], pred.bbox[2], pred.bbox[3]);
+              canvasCtx.fillStyle = '#00FFFF';
+              canvasCtx.font = '14px Arial';
+              canvasCtx.fillText(`${pred.class} (${Math.round(pred.score*100)}%)`, pred.bbox[0], pred.bbox[1] > 10 ? pred.bbox[1] - 5 : 10);
+            }
+          });
+          document.getElementById('object_detected').innerText = detectedObjects.length > 0 ? detectedObjects[0] : "None";
+        } catch(e){}
+      }
+
+      // --- 2. REAL-TIME AR SKELETON OVERLAY ---
       if (results.poseLandmarks) {
-        // --- REAL-TIME AR SKELETON OVERLAY ---
-        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 4});
+        drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
         drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2, radius: 4});
 
         let lm = results.poseLandmarks;
@@ -383,9 +420,9 @@ html_code = """
 </html>
 """
 
-components.html(html_code, height=680)
+components.html(html_code, height=720)
 
-# Receiver JavaScript bridge for seamless postMessage listener inside Streamlit
+# JS Bridge to sync data safely without page reloads or AttributeError
 st.components.v1.html("""
 <script>
 window.addEventListener("message", (event) => {
@@ -401,11 +438,10 @@ window.addEventListener("message", (event) => {
 
 st.markdown("---")
 
-# Enable PDF creation once data is transferred
+# Retrieve state safely
 if "audit_data" not in st.session_state:
     st.session_state.audit_data = None
 
-# Retrieve synced data
 rec_data = st.session_state.get("audit_data")
 
 if rec_data:
@@ -418,4 +454,4 @@ if rec_data:
         mime="application/pdf"
     )
 else:
-    st.info("💡 Click **'Start Analysis'** to begin monitoring, perform the task, and click **'Stop & Sync Session'** to calculate metrics and unlock your report.")
+    st.info("💡 Click **'Start Analysis'** to begin monitoring, perform the lifting task, and click **'Stop & Sync Session'** to calculate metrics and unlock your report.")
