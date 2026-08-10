@@ -8,7 +8,7 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="Edge-AI REBA & Ergonomic Auditor", layout="wide")
 
-# Initialize session state for audit data safely
+# Initialize session state for audit data
 if "audit_data" not in st.session_state:
     st.session_state.audit_data = None
 
@@ -43,7 +43,6 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=False)
     
-    # Ensure audit_data is a dictionary
     if not isinstance(audit_data, dict):
         audit_data = {}
         
@@ -225,11 +224,17 @@ op_id = sidebar.text_input("Operator ID", "OP-001")
 profile = sidebar.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
 actual_wt = sidebar.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
 
-# --- CLIENT-SIDE ENGINE (MediaPipe Pose + COCO-SSD Object Detector) ---
+# Build custom component files dynamically in a local folder
+COMPONENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_component")
+os.makedirs(COMPONENT_DIR, exist_ok=True)
+
 html_code = """
 <!DOCTYPE html>
 <html>
 <head>
+  <!-- Official Streamlit Component Library Bridge -->
+  <script src="https://unpkg.com/streamlit-component-lib@^1.4.0/dist/streamlit-component-lib.js"></script>
+  
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
@@ -237,6 +242,7 @@ html_code = """
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
 
   <style>
+    body { margin: 0; font-family: sans-serif; background-color: transparent; }
     .container { position: relative; width: 100%; max-width: 640px; margin: auto; }
     video { display: none; }
     canvas { width: 100%; height: auto; border-radius: 8px; background: #000; }
@@ -244,7 +250,7 @@ html_code = """
     button { padding: 10px 20px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white; font-size: 14px; }
     .btn-start { background-color: #28a745; }
     .btn-stop { background-color: #dc3545; }
-    .metrics { margin-top: 12px; font-family: sans-serif; display: flex; gap: 10px; }
+    .metrics { margin-top: 12px; display: flex; gap: 10px; }
     .card { background: #f0f2f6; padding: 10px; border-radius: 6px; flex: 1; text-align: center; }
   </style>
 </head>
@@ -268,6 +274,9 @@ html_code = """
   </div>
 
   <script>
+    Streamlit.setComponentReady();
+    Streamlit.setFrameHeight(680);
+
     const videoElement = document.getElementById('webcam');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
@@ -314,13 +323,8 @@ html_code = """
         object_detected: mainObj
       };
 
-      // Safely dispatch stream data back to Streamlit host
-      window.parent.postMessage({
-        type: 'REBA_DATA_SYNC',
-        payload: payload
-      }, '*');
-      
-      alert("Session saved! Generating report...");
+      // Direct Streamlit Value Push (Instant Rerun in Streamlit Python)
+      Streamlit.setComponentValue(payload);
     }
 
     function calcAngle(a, b, c) {
@@ -423,35 +427,22 @@ html_code = """
 </html>
 """
 
-# Render Component
-components.html(html_code, height=720)
+# Write HTML file locally for component registration
+with open(os.path.join(COMPONENT_DIR, "index.html"), "w", encoding="utf-8") as f:
+    f.write(html_code)
 
-# JS Bridge to listen to postMessage and put data into query params safely
-components.html("""
-<script>
-window.addEventListener("message", (event) => {
-    if (event.data && event.data.type === "REBA_DATA_SYNC") {
-        const payloadStr = encodeURIComponent(JSON.stringify(event.data.payload));
-        const url = new URL(window.parent.location.href);
-        url.searchParams.set("audit_payload", payloadStr);
-        window.parent.location.href = url.href;
-    }
-});
-</script>
-""", height=0)
+# Register custom component
+reba_edge_component = components.declare_component("reba_edge_component", path=COMPONENT_DIR)
+
+# Render Component & Capture Return Dict Directly
+received_payload = reba_edge_component()
+
+if received_payload and isinstance(received_payload, dict):
+    st.session_state.audit_data = received_payload
 
 st.markdown("---")
 
-# Retrieve synced dictionary payload safely from Streamlit query params
-query_params = st.query_params
-if "audit_payload" in query_params:
-    try:
-        raw_json = query_params["audit_payload"]
-        st.session_state.audit_data = json.loads(raw_json)
-    except Exception:
-        pass
-
-# Render PDF Download Button whenever session data exists
+# Render PDF Download Button
 if isinstance(st.session_state.audit_data, dict) and st.session_state.audit_data:
     st.success("✅ Recorded session synced! Your report is ready.")
     pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, st.session_state.audit_data)
