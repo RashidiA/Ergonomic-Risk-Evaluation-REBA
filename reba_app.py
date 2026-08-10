@@ -53,10 +53,10 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(0, 7, "REBA POSTURE AUDIT REPORT (EDGE AI ENGINE)", ln=True, align='C')
     pdf.set_font("Arial", 'B', 9.5)
-    pdf.cell(0, 5, f"Operator: {operator_id} | Session Duration: {dur:.1f}s | High Risk Exposure (Score >= 8): {pct_high_risk:.1f}%", ln=True, align='C')
+    pdf.cell(0, 5, f"Operator: {operator_id} | Session Duration: {dur:.1f}s | High Risk Exposure: {pct_high_risk:.1f}%", ln=True, align='C')
     
     pdf.set_font("Arial", 'B', 10.5)
-    pdf.cell(0, 6, f"Peak Evaluated REBA Score: {score} | Object Detected: {obj_detected}", ln=True, align='C')
+    pdf.cell(0, 6, f"Peak Evaluated REBA Score: {score} | Object Recorded: {obj_detected}", ln=True, align='C')
     pdf.ln(2)
 
     # REBA Action Table
@@ -72,7 +72,7 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
         if r_score == "1": is_match = (score == 1)
         elif r_score == "2-3": is_match = (score in [2, 3])
         elif r_score == "4-7": is_match = (4 <= score <= 7)
-        elif r_score == "8-10": is_match = (8 <= score <= 10)
+        elif r_score == "8-10": is_match = (score >= 8 and score <= 10)
         else: is_match = (score >= 11)
 
         prefix = "-> " if is_match else ""
@@ -253,13 +253,13 @@ html_code = """
 
   <div class="controls">
     <button id="toggleBtn" class="btn-toggle" onclick="toggleAnalysis()">▶ Start Analysis</button>
-    <button id="reportBtn" class="btn-report" onclick="downloadReport()" disabled>📄 Generate PDF Report</button>
+    <button id="reportBtn" class="btn-report" onclick="downloadReport()">📄 Generate PDF Report</button>
   </div>
 
   <div class="metrics">
     <div class="card"><strong>Live REBA</strong><h2 id="live_score">1</h2></div>
     <div class="card"><strong>Peak REBA</strong><h2 id="peak_score">1</h2></div>
-    <div class="card"><strong>High Risk %</strong><h2 id="high_risk_pct">0%</h2></div>
+    <div class="card"><strong>NIOSH Result</strong><h2 id="niosh_result" style="font-size: 16px;">SAFE (LI 0.41)</h2></div>
     <div class="card"><strong>Object Detected</strong><h2 id="object_detected" style="font-size: 16px;">unidentified object</h2></div>
     <div class="card"><strong>Timer</strong><h2 id="timer">0.0s</h2></div>
   </div>
@@ -273,6 +273,7 @@ html_code = """
 
     let objectModel = null;
     let currentObject = "unidentified object";
+    let lastRecordedObject = "unidentified object";
 
     let isAnalyzing = false;
     let startTime = 0;
@@ -282,6 +283,8 @@ html_code = """
     let peakFrameBase64 = "";
     let peakAngles = {};
     let sessionSummary = null;
+
+    const actualWeight = """ + str(actual_wt) + """;
 
     cocoSsd.load().then(model => {
       objectModel = model;
@@ -295,8 +298,8 @@ html_code = """
         totalFramesRecorded = 0;
         highRiskFrames = 0;
         peakRebaScore = 0;
+        lastRecordedObject = currentObject;
         sessionSummary = null;
-        reportBtn.disabled = true;
 
         toggleBtn.innerText = "⏹ Stop Session";
         toggleBtn.classList.add("recording");
@@ -310,22 +313,37 @@ html_code = """
         const pctHighRisk = totalFramesRecorded > 0 ? (highRiskFrames / totalFramesRecorded) * 100.0 : 0.0;
 
         sessionSummary = {
-          peak_reba_score: peakRebaScore || 1,
+          peak_reba_score: peakRebaScore || document.getElementById('live_score').innerText || 1,
           peak_angles: peakAngles,
-          peak_image_base64: peakFrameBase64,
+          peak_image_base64: peakFrameBase64 || canvasElement.toDataURL('image/jpeg', 0.85),
           auto_zone: "Elbow to Knuckle",
           auto_reach: "Close",
           total_duration: duration,
           pct_high_risk: pctHighRisk,
-          object_detected: currentObject
+          object_detected: lastRecordedObject !== "unidentified object" ? lastRecordedObject : currentObject
         };
 
-        reportBtn.disabled = false;
+        const stringifiedData = JSON.stringify(sessionSummary);
+        window.parent.postMessage({
+          type: 'streamlit:setComponentValue',
+          value: stringifiedData
+        }, '*');
       }
     }
 
     function downloadReport() {
-      if (!sessionSummary) return;
+      if (!sessionSummary) {
+        sessionSummary = {
+          peak_reba_score: parseInt(document.getElementById('peak_score').innerText) || 1,
+          peak_angles: peakAngles,
+          peak_image_base64: canvasElement.toDataURL('image/jpeg', 0.85),
+          auto_zone: "Elbow to Knuckle",
+          auto_reach: "Close",
+          total_duration: 0.0,
+          pct_high_risk: 0.0,
+          object_detected: currentObject
+        };
+      }
 
       const stringifiedData = JSON.stringify(sessionSummary);
       window.parent.postMessage({
@@ -364,9 +382,9 @@ html_code = """
             }
           });
 
-          // Rule: If object detected on camera but not in COCO taxonomy, label as "unidentified object"
           if (detected.length > 0) {
             currentObject = detected[0];
+            lastRecordedObject = currentObject;
           } else {
             currentObject = "unidentified object";
           }
@@ -394,10 +412,18 @@ html_code = """
         let aScore = angUArm <= 20 ? 1 : angUArm <= 45 ? 2 : 3;
         let laScore = (angLArm >= 60 && angLArm <= 100) ? 1 : 2;
         let lScore = Math.abs(180 - angLegs) <= 30 ? 1 : 2;
-        let wScore = Math.abs(180 - angLegs) <= 30 ? 1 : 2;
+        let wScore = Math.abs(180 - angWrist) <= 15 ? 1 : 2;
 
         let totalReba = tScore + nScore + aScore + laScore + lScore + wScore;
         document.getElementById('live_score').innerText = totalReba;
+
+        // Calculate Real-Time NIOSH Lifting Index
+        let trunkDev = Math.abs(180 - angTrunk);
+        let am = Math.max(0.0, 1.0 - (0.0032 * trunkDev));
+        let rwl = 23.0 * 0.83 * 1.00 * 1.00 * am * 0.95 * 1.00;
+        let li = actualWeight / Math.max(0.1, rwl);
+        let nioshText = li <= 1.0 ? `SAFE (LI ${li.toFixed(2)})` : `HIGH RISK (LI ${li.toFixed(2)})`;
+        document.getElementById('niosh_result').innerText = nioshText;
 
         if (isAnalyzing) {
           totalFramesRecorded++;
@@ -405,7 +431,6 @@ html_code = """
 
           let elapsed = ((Date.now() - startTime) / 1000.0).toFixed(1);
           document.getElementById('timer').innerText = elapsed + "s";
-          document.getElementById('high_risk_pct').innerText = ((highRiskFrames / totalFramesRecorded) * 100.0).toFixed(1) + "%";
 
           if (totalReba >= peakRebaScore) {
             peakRebaScore = totalReba;
@@ -449,14 +474,26 @@ if res and isinstance(res, str):
     except Exception:
         pass
 
+# Fallback session data if not synced from component yet
+default_audit_data = {
+    "peak_reba_score": 1,
+    "peak_angles": {"neck": 0, "neck_score": 1, "trunk": 180, "trunk_score": 1, "legs": 180, "legs_score": 1, "upper_arm": 0, "upper_arm_score": 1, "lower_arm": 90, "lower_arm_score": 1, "wrist": 180, "wrist_score": 1},
+    "peak_image_base64": "",
+    "auto_zone": "Elbow to Knuckle",
+    "auto_reach": "Close",
+    "total_duration": 0.0,
+    "pct_high_risk": 0.0,
+    "object_detected": "unidentified object"
+}
+
+audit_data_to_use = st.session_state.get("audit_data", default_audit_data)
+
 st.markdown("---")
 
-if "audit_data" in st.session_state and st.session_state.audit_data:
-    st.success("✅ Audit Session Synced!")
-    pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, st.session_state.audit_data)
-    st.download_button(
-        label="📥 Download PDF Audit Report File",
-        data=pdf_bytes,
-        file_name=f"REBA_Audit_{op_id}.pdf",
-        mime="application/pdf"
-    )
+pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, audit_data_to_use)
+st.download_button(
+    label="📥 Download PDF Audit Report File",
+    data=pdf_bytes,
+    file_name=f"REBA_Audit_{op_id}.pdf",
+    mime="application/pdf"
+)
