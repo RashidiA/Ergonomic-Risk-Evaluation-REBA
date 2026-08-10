@@ -40,8 +40,8 @@ html_code = f"""
   <div class="container">
     <video id="webcam" autoplay playsinline></video>
     <canvas id="output_canvas"></canvas>
-    <!-- Hidden Canvas to dynamically generate vector Ergonomic Reference Diagram -->
-    <canvas id="diagram_canvas" width="400" height="300" style="display:none;"></canvas>
+    <!-- Hidden Canvas with precise full-height dimensions for complete diagram vector rendering -->
+    <canvas id="diagram_canvas" width="500" height="350" style="display:none;"></canvas>
   </div>
 
   <div class="controls">
@@ -98,62 +98,102 @@ html_code = f"""
       objectModel = model;
     }});
 
+    // High-resolution Vector Canvas Engine to match 2nd attachment exactly
     function generateDiagramBase64() {{
       const dCanvas = document.getElementById('diagram_canvas');
       const ctx = dCanvas.getContext('2d');
+      
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, 400, 300);
+      ctx.fillRect(0, 0, 500, 350);
 
-      // Draw Head/Body outlines for Female & Male reference
-      ctx.strokeStyle = "#333333";
-      ctx.lineWidth = 2;
-      ctx.font = "bold 12px Arial";
-      ctx.fillStyle = "#000000";
+      ctx.fillStyle = "#333333";
+      ctx.font = "bold 13px Helvetica, Arial";
+      ctx.fillText("Female", 140, 30);
+      ctx.fillText("Male", 320, 30);
 
-      ctx.fillText("Female", 80, 20);
-      ctx.fillText("Male", 280, 20);
-
-      // Draw Grid boxes representing zones
-      const zones = [
-        {{ labelF: "3 kg | 7 kg", labelM: "10 kg | 5 kg", y: 40, h: 40, name: "Shoulder height" }},
-        {{ labelF: "7 kg | 13 kg", labelM: "20 kg | 10 kg", y: 85, h: 40, name: "Elbow height" }},
-        {{ labelF: "10 kg | 16 kg", labelM: "25 kg | 15 kg", y: 130, h: 40, name: "Knuckle height" }},
-        {{ labelF: "7 kg | 13 kg", labelM: "20 kg | 10 kg", y: 175, h: 40, name: "" }},
-        {{ labelF: "3 kg | 7 kg", labelM: "10 kg | 5 kg", y: 220, h: 40, name: "Mid lower leg height" }}
+      const zoneBoxes = [
+        {{ labelF: "3 kg | 7 kg", labelM: "10 kg | 5 kg", y: 45, h: 42, name: "Shoulder height" }},
+        {{ labelF: "7 kg | 13 kg", labelM: "20 kg | 10 kg", y: 92, h: 42, name: "Elbow height" }},
+        {{ labelF: "10 kg | 16 kg", labelM: "25 kg | 15 kg", y: 139, h: 42, name: "Knuckle height" }},
+        {{ labelF: "7 kg | 13 kg", labelM: "20 kg | 10 kg", y: 186, h: 42, name: "" }},
+        {{ labelF: "3 kg | 7 kg", labelM: "10 kg | 5 kg", y: 233, h: 42, name: "Mid lower leg height" }}
       ];
 
-      zones.forEach(z => {{
-        // Female grid box
-        ctx.fillStyle = "#f8f9fa";
-        ctx.strokeStyle = "#a0a0a0";
-        ctx.fillRect(40, z.y, 110, z.h);
-        ctx.strokeRect(40, z.y, 110, z.h);
-        
-        // Male grid box
-        ctx.fillRect(230, z.y, 110, z.h);
-        ctx.strokeRect(230, z.y, 110, z.h);
+      // Draw standard Grid Containers
+      zoneBoxes.forEach(z => {{
+        ctx.fillStyle = "#fafafa";
+        ctx.strokeStyle = "#8d8d8d";
+        ctx.lineWidth = 1.5;
+
+        // Female Box
+        ctx.fillRect(100, z.y, 110, z.h);
+        ctx.strokeRect(100, z.y, 110, z.h);
+
+        // Male Box
+        ctx.fillRect(270, z.y, 110, z.h);
+        ctx.strokeRect(270, z.y, 110, z.h);
 
         ctx.fillStyle = "#222222";
-        ctx.font = "10px Arial";
-        ctx.fillText(z.labelF, 60, z.y + z.h/2 + 3);
-        ctx.fillText(z.labelM, 250, z.y + z.h/2 + 3);
+        ctx.font = "bold 11px Arial";
+        ctx.fillText(z.labelF, 128, z.y + z.h/2 + 4);
+        ctx.fillText(z.labelM, 298, z.y + z.h/2 + 4);
 
-        if(z.name) {{
+        if (z.name) {{
           ctx.fillStyle = "#555555";
-          ctx.font = "9px Arial";
-          ctx.fillText(z.name, 155, z.y + 12);
+          ctx.font = "10px Arial";
+          ctx.fillText(z.name, 213, z.y + 14);
         }}
       }});
 
-      // Draw Ground Line
+      // Draw Human Vector Mannequins (Female on Left, Male on Right)
+      function drawMannequin(cx, isFemale) {{
+        ctx.strokeStyle = "#807060";
+        ctx.fillStyle = "#c2a68c";
+        ctx.lineWidth = 2;
+
+        // Head
+        ctx.beginPath();
+        ctx.arc(cx, 55, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Torso
+        ctx.beginPath();
+        ctx.moveTo(cx, 67);
+        ctx.lineTo(cx, 160);
+        ctx.lineWidth = isFemale ? 6 : 8;
+        ctx.stroke();
+
+        // Arms
+        ctx.beginPath();
+        ctx.moveTo(cx, 80);
+        ctx.lineTo(cx - 15, 120);
+        ctx.lineTo(cx + 10, 140);
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // Legs down to ground
+        ctx.beginPath();
+        ctx.moveTo(cx, 160);
+        ctx.lineTo(cx - 10, 280);
+        ctx.moveTo(cx, 160);
+        ctx.lineTo(cx + 10, 280);
+        ctx.lineWidth = 4;
+        ctx.stroke();
+      }}
+
+      drawMannequin(70, true);
+      drawMannequin(410, false);
+
+      // Baseline Ground Line across the entire width
       ctx.beginPath();
-      ctx.moveTo(10, 265);
-      ctx.lineTo(390, 265);
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = "#000";
+      ctx.moveTo(40, 280);
+      ctx.lineTo(460, 280);
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "#1a1a1a";
       ctx.stroke();
 
-      return dCanvas.toDataURL('image/jpeg', 0.9);
+      return dCanvas.toDataURL('image/jpeg', 0.95);
     }}
 
     function resetSessionMemory() {{
@@ -522,16 +562,16 @@ html_code = f"""
         yPos += 5;
       }});
 
-      // Insert Ergonomic Diagram + Recommendations side-by-side
+      // Insert Full Ergonomic Diagram (Adjusted height parameter prevents truncation)
       yPos += 6;
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(10);
       doc.text("Ergonomic Lifting Reference Diagram", 10, yPos); yPos += 6;
 
       let diagramBase64 = generateDiagramBase64();
-      doc.addImage(diagramBase64, 'JPEG', 10, yPos, 85, 60);
+      doc.addImage(diagramBase64, 'JPEG', 10, yPos, 90, 63);
 
-      let recX = 105;
+      let recX = 108;
       let recY = yPos + 10;
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(10);
