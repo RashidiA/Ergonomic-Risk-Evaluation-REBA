@@ -40,6 +40,8 @@ html_code = f"""
   <div class="container">
     <video id="webcam" autoplay playsinline></video>
     <canvas id="output_canvas"></canvas>
+    <!-- Hidden Canvas to dynamically generate vector Ergonomic Reference Diagram -->
+    <canvas id="diagram_canvas" width="400" height="300" style="display:none;"></canvas>
   </div>
 
   <div class="controls">
@@ -69,7 +71,6 @@ html_code = f"""
     let startTime = 0;
     let sessionDuration = 0;
     
-    // Joint-specific duration tracking for page 1 table
     let bodyPartFrames = {{
       trunk: {{ s1_2: 0, s3_4: 0, s5_plus: 0 }},
       neck: {{ s1_2: 0, s3_4: 0, s5_plus: 0 }},
@@ -96,6 +97,64 @@ html_code = f"""
     cocoSsd.load().then(model => {{
       objectModel = model;
     }});
+
+    function generateDiagramBase64() {{
+      const dCanvas = document.getElementById('diagram_canvas');
+      const ctx = dCanvas.getContext('2d');
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, 400, 300);
+
+      // Draw Head/Body outlines for Female & Male reference
+      ctx.strokeStyle = "#333333";
+      ctx.lineWidth = 2;
+      ctx.font = "bold 12px Arial";
+      ctx.fillStyle = "#000000";
+
+      ctx.fillText("Female", 80, 20);
+      ctx.fillText("Male", 280, 20);
+
+      // Draw Grid boxes representing zones
+      const zones = [
+        {{ labelF: "3 kg | 7 kg", labelM: "10 kg | 5 kg", y: 40, h: 40, name: "Shoulder height" }},
+        {{ labelF: "7 kg | 13 kg", labelM: "20 kg | 10 kg", y: 85, h: 40, name: "Elbow height" }},
+        {{ labelF: "10 kg | 16 kg", labelM: "25 kg | 15 kg", y: 130, h: 40, name: "Knuckle height" }},
+        {{ labelF: "7 kg | 13 kg", labelM: "20 kg | 10 kg", y: 175, h: 40, name: "" }},
+        {{ labelF: "3 kg | 7 kg", labelM: "10 kg | 5 kg", y: 220, h: 40, name: "Mid lower leg height" }}
+      ];
+
+      zones.forEach(z => {{
+        // Female grid box
+        ctx.fillStyle = "#f8f9fa";
+        ctx.strokeStyle = "#a0a0a0";
+        ctx.fillRect(40, z.y, 110, z.h);
+        ctx.strokeRect(40, z.y, 110, z.h);
+        
+        // Male grid box
+        ctx.fillRect(230, z.y, 110, z.h);
+        ctx.strokeRect(230, z.y, 110, z.h);
+
+        ctx.fillStyle = "#222222";
+        ctx.font = "10px Arial";
+        ctx.fillText(z.labelF, 60, z.y + z.h/2 + 3);
+        ctx.fillText(z.labelM, 250, z.y + z.h/2 + 3);
+
+        if(z.name) {{
+          ctx.fillStyle = "#555555";
+          ctx.font = "9px Arial";
+          ctx.fillText(z.name, 155, z.y + 12);
+        }}
+      }});
+
+      // Draw Ground Line
+      ctx.beginPath();
+      ctx.moveTo(10, 265);
+      ctx.lineTo(390, 265);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#000";
+      ctx.stroke();
+
+      return dCanvas.toDataURL('image/jpeg', 0.9);
+    }}
 
     function resetSessionMemory() {{
       peakRebaScore = 1;
@@ -216,7 +275,6 @@ html_code = f"""
           document.getElementById('timer').innerText = sessionDuration + "s";
         }}
 
-        // NIOSH Calculation
         let trunkDev = Math.abs(180 - angTrunk);
         let am = Math.max(0.0, 1.0 - (0.0032 * trunkDev));
         let rwl = 23.0 * 1.00 * 0.86 * 1.00 * am * 0.95 * 1.00;
@@ -260,7 +318,6 @@ html_code = f"""
 
     function getPct(partKey, tierKey) {{
       if (totalFramesRecorded === 0) {{
-        // Fallback default matching your snapshot structure
         if (partKey === 'upper_arm' && tierKey === 's1_2') return "36.3%";
         if (partKey === 'upper_arm' && tierKey === 's3_4') return "63.7%";
         if (tierKey === 's1_2') return "100.0%";
@@ -277,9 +334,7 @@ html_code = f"""
       let imgToEmbed = peakFrameBase64 || lastValidCanvasFrame;
       let dur = isAnalyzing ? ((Date.now() - startTime) / 1000.0).toFixed(1) : (sessionDuration || "12.4");
 
-      // ==========================================
-      // --- PAGE 1: REBA POSTURE AUDIT REPORT ---
-      // ==========================================
+      // PAGE 1: REBA POSTURE AUDIT REPORT
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(14);
       doc.text("REBA POSTURE AUDIT REPORT", 105, 12, {{ align: "center" }});
@@ -288,7 +343,6 @@ html_code = f"""
       doc.text(`Operator: ${{operatorId}} | Total Duration: ${{dur}} sec`, 105, 18, {{ align: "center" }});
       doc.text(`Peak Evaluated REBA Score: ${{peakRebaScore}}`, 105, 24, {{ align: "center" }});
 
-      // Full-Body Posture Duration Breakdown Table
       let yPos = 32;
       doc.setFontSize(10);
       doc.setFont("Helvetica", "bold");
@@ -320,7 +374,6 @@ html_code = f"""
         yPos += 5;
       }});
 
-      // REBA Standard Action & Risk Table
       yPos += 5;
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(10);
@@ -363,13 +416,11 @@ html_code = f"""
         yPos += 5;
       }});
 
-      // Peak Snapshot & Step-by-Step Joint Angles
       yPos += 6;
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(10);
       doc.text("Peak REBA Posture Snapshot & Step-by-Step Joint Angles", 10, yPos); yPos += 6;
 
-      // Frame Snapshot
       if (imgToEmbed && imgToEmbed.length > 100) {{
         doc.addImage(imgToEmbed, 'JPEG', 10, yPos, 90, 60);
       }} else {{
@@ -378,7 +429,6 @@ html_code = f"""
         doc.text("[ Frame Snapshot ]", 55, yPos + 30, {{ align: "center" }});
       }}
 
-      // Angles Table on the right of the snapshot
       let tableY = yPos;
       doc.setFontSize(8);
       doc.setFont("Helvetica", "bold");
@@ -405,14 +455,11 @@ html_code = f"""
         tableY += 6;
       }});
 
-      // Page 1 Footer
       doc.setFont("Helvetica", "normal");
       doc.setFontSize(8);
       doc.text("Page 1 of 3 - REBA Posture Risk Evaluation", 105, 285, {{ align: "center" }});
 
-      // ==========================================
-      // --- PAGE 2: MANUAL WEIGHT LIFTING AUDIT ---
-      // ==========================================
+      // PAGE 2: MANUAL WEIGHT LIFTING AUDIT
       doc.addPage();
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(14);
@@ -436,7 +483,6 @@ html_code = f"""
       let isSafe = actualWeight <= maxLimit;
       doc.text(`SAFETY STATUS: ${{isSafe ? 'WITHIN SAFE ERGONOMIC LIMIT' : 'EXCEEDS SAFE ERGONOMIC LIMIT'}}`, 12, yPos); yPos += 10;
 
-      // Recommended Weight Matrix Reference
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(10);
       doc.text(`Recommended Weight Matrix Reference (${{evalProfile}})`, 10, yPos); yPos += 4;
@@ -476,23 +522,30 @@ html_code = f"""
         yPos += 5;
       }});
 
-      yPos += 8;
+      // Insert Ergonomic Diagram + Recommendations side-by-side
+      yPos += 6;
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(10);
-      doc.text("Ergonomic Recommendations:", 10, yPos); yPos += 6;
+      doc.text("Ergonomic Lifting Reference Diagram", 10, yPos); yPos += 6;
+
+      let diagramBase64 = generateDiagramBase64();
+      doc.addImage(diagramBase64, 'JPEG', 10, yPos, 85, 60);
+
+      let recX = 105;
+      let recY = yPos + 10;
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("Ergonomic Recommendations:", recX, recY); recY += 6;
       doc.setFont("Helvetica", "normal");
       doc.setFontSize(8);
-      doc.text("1. Load weight remains safe for standard execution in this zone.", 12, yPos); yPos += 5;
-      doc.text("2. Maintain current reach distance and vertical placement guidelines.", 12, yPos);
+      doc.text("1. Load weight remains safe for standard execution in this zone.", recX, recY); recY += 5;
+      doc.text("2. Maintain current reach distance and vertical placement guidelines.", recX, recY);
 
-      // Page 2 Footer
       doc.setFont("Helvetica", "normal");
       doc.setFontSize(8);
       doc.text("Page 2 of 3 - Recommended Weight Limits Matrix Standard", 105, 285, {{ align: "center" }});
 
-      // ==========================================
-      // --- PAGE 3: NIOSH LIFTING EQUATION ---
-      // ==========================================
+      // PAGE 3: NIOSH LIFTING EQUATION
       doc.addPage();
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(14);
@@ -559,7 +612,6 @@ html_code = f"""
       doc.text("- LI <= 1.0 indicates task is safe for most healthy industrial workers.", 12, yPos); yPos += 5;
       doc.text("- LI > 1.0 indicates increased risk of lower back strain; ergonomic redesign or mechanical lift assist is recommended.", 12, yPos);
 
-      // Page 3 Footer
       doc.setFont("Helvetica", "normal");
       doc.setFontSize(8);
       doc.text("Page 3 of 3 - NIOSH Lifting Equation Assessment Report", 105, 285, {{ align: "center" }});
