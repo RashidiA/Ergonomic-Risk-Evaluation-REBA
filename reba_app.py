@@ -4,7 +4,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="Edge-AI REBA & Ergonomic Auditor", layout="wide")
 
 st.title("⚡ Edge-AI Client-Side REBA & Object Detection Auditor")
-st.caption("🚀 Real-Time Pose estimation, AR Skeleton, Object Detection & 3-Page Client-Side PDF Generation")
+st.caption("🚀 Real-Time Pose estimation, AR Skeleton, Hand-Targeted Object Detection & 3-Page PDF Generation")
 
 sidebar = st.sidebar
 op_id = sidebar.text_input("Operator ID", "OP-001")
@@ -51,7 +51,7 @@ html_code = f"""
     <div class="card"><strong>Live REBA</strong><h2 id="live_score">1</h2></div>
     <div class="card"><strong>Peak REBA</strong><h2 id="peak_score">1</h2></div>
     <div class="card"><strong>NIOSH Result</strong><h2 id="niosh_result" style="font-size: 16px;">SAFE (LI 0.43)</h2></div>
-    <div class="card"><strong>Object Detected</strong><h2 id="object_detected" style="font-size: 16px;">Unidentified Object</h2></div>
+    <div class="card"><strong>Object Detected</strong><h2 id="object_detected" style="font-size: 16px;">No object detected</h2></div>
     <div class="card"><strong>Timer</strong><h2 id="timer">0.0s</h2></div>
   </div>
 
@@ -61,12 +61,11 @@ html_code = f"""
     const canvasCtx = canvasElement.getContext('2d');
     const toggleBtn = document.getElementById('toggleBtn');
 
-    // Direct GitHub Raw URL to your assets image
     const GITHUB_ASSET_URL = "https://raw.githubusercontent.com/RashidiA/Ergonomic-Risk-Evaluation-REBA/main/assets/recommended_weight.png";
 
     let objectModel = null;
-    let currentObject = "Unidentified Object";
-    let persistObject = "Unidentified Object";
+    let currentObject = "No object detected";
+    let persistObject = "No object detected";
 
     let isAnalyzing = false;
     let startTime = 0;
@@ -99,7 +98,6 @@ html_code = f"""
       objectModel = model;
     }});
 
-    // Helper to asynchronously convert hosted GitHub PNG image into Base64 format for jsPDF
     function getBase64ImageFromUrl(url) {{
       return new Promise((resolve, reject) => {{
         const img = new Image();
@@ -161,6 +159,17 @@ html_code = f"""
       else bodyPartFrames[partKey].s5_plus++;
     }}
 
+    // Helper to check if a point (hand) is inside/near an object bounding box
+    function isHandNearBox(handX, handY, bbox, threshold = 60) {{
+      let [x, y, width, height] = bbox;
+      return (
+        handX >= (x - threshold) &&
+        handX <= (x + width + threshold) &&
+        handY >= (y - threshold) &&
+        handY <= (y + height + threshold)
+      );
+    }}
+
     async function onResults(results) {{
       canvasElement.width = videoElement.videoWidth || 640;
       canvasElement.height = videoElement.videoHeight || 480;
@@ -169,33 +178,72 @@ html_code = f"""
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-      if (objectModel && videoElement.readyState === 4) {{
-        try {{
-          const predictions = await objectModel.detect(videoElement);
-          let detected = [];
-          predictions.forEach(pred => {{
-            if (pred.score > 0.30 && pred.class !== 'person') {{
-              detected.push(pred.class);
-              canvasCtx.strokeStyle = '#00FFFF';
-              canvasCtx.lineWidth = 2;
-              canvasCtx.strokeRect(pred.bbox[0], pred.bbox[1], pred.bbox[2], pred.bbox[3]);
-              canvasCtx.fillStyle = '#00FFFF';
-              canvasCtx.font = '14px Arial';
-              canvasCtx.fillText(`${{pred.class}} (${{Math.round(pred.score*100)}}%)`, pred.bbox[0], pred.bbox[1] > 10 ? pred.bbox[1] - 5 : 10);
-            }}
-          }});
-
-          if (detected.length > 0) {{
-            currentObject = detected[0];
-            persistObject = currentObject;
-          }} else {{
-            currentObject = persistObject;
-          }}
-          document.getElementById('object_detected').innerText = currentObject;
-        }} catch(e){{}}
-      }}
+      let handOnObjectDetected = "No object detected";
 
       if (results.poseLandmarks) {{
+        let lm = results.poseLandmarks;
+        let leftWrist = lm[15];
+        let rightWrist = lm[16];
+
+        let lwX = leftWrist ? leftWrist.x * canvasElement.width : -1;
+        let lwY = leftWrist ? leftWrist.y * canvasElement.height : -1;
+        let rwX = rightWrist ? rightWrist.x * canvasElement.width : -1;
+        let rwY = rightWrist ? rightWrist.y * canvasElement.height : -1;
+
+        if (objectModel && videoElement.readyState === 4) {{
+          try {{
+            const predictions = await objectModel.detect(videoElement);
+            let detectedHandObjects = [];
+
+            predictions.forEach(pred => {{
+              if (pred.score > 0.25 && pred.class !== 'person') {{
+                let bbox = pred.bbox;
+                
+                // Check if left or right wrist is near this bounding box
+                let nearLeft = lwX > 0 && isHandNearBox(lwX, lwY, bbox);
+                let nearRight = rwX > 0 && isHandNearBox(rwX, rwY, bbox);
+
+                if (nearLeft || nearRight) {{
+                  // Recognized class in COCO list near hand
+                  if (pred.class && pred.class.trim() !== "") {{
+                    detectedHandObjects.push(pred.class);
+                  }} else {{
+                    detectedHandObjects.push("Unidentified Object");
+                  }}
+
+                  canvasCtx.strokeStyle = '#00FFFF';
+                  canvasCtx.lineWidth = 3;
+                  canvasCtx.strokeRect(bbox[0], bbox[1], bbox[2], bbox[3]);
+                  canvasCtx.fillStyle = '#00FFFF';
+                  canvasCtx.font = 'bold 14px Arial';
+                  canvasCtx.fillText(`Hand Object: ${{pred.class}} (${{Math.round(pred.score*100)}}%)`, bbox[0], bbox[1] > 10 ? bbox[1] - 5 : 10);
+                }}
+              }}
+            }});
+
+            if (detectedHandObjects.length > 0) {{
+              handOnObjectDetected = detectedHandObjects[0];
+            }} else {{
+              // If hands are raised/active but no COCO item match, check if hands are close together carrying something unknown
+              let handDist = Math.hypot(lwX - rwX, lwY - rwY);
+              if (handDist < 180 && lwY > 0 && rwY > 0) {{
+                // Check if hands are holding something unclassified
+                handOnObjectDetected = "Unidentified Object";
+              }} else {{
+                handOnObjectDetected = "No object detected";
+              }}
+            }}
+          }} catch(e){{}}
+        }}
+
+        currentObject = handOnObjectDetected;
+        if (currentObject !== "No object detected") {{
+          persistObject = currentObject;
+        }} else if (persistObject === "") {{
+          persistObject = "No object detected";
+        }}
+        document.getElementById('object_detected').innerText = currentObject;
+
         drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {{color: '#00FF00', lineWidth: 3}});
         drawLandmarks(canvasCtx, results.poseLandmarks, {{color: '#FF0000', lineWidth: 2, radius: 4}});
 
@@ -203,7 +251,6 @@ html_code = f"""
           lastValidCanvasFrame = canvasElement.toDataURL('image/jpeg', 0.85);
         }} catch(e){{}}
 
-        let lm = results.poseLandmarks;
         let shld = lm[11], hip = lm[23], elbw = lm[13], nose = lm[0];
         let wrist = lm[15], index = lm[19], knee = lm[25], ankle = lm[27];
 
@@ -295,7 +342,6 @@ html_code = f"""
       let imgToEmbed = peakFrameBase64 || lastValidCanvasFrame;
       let dur = isAnalyzing ? ((Date.now() - startTime) / 1000.0).toFixed(1) : (sessionDuration || "12.4");
 
-      // Fetch recommended_weight.png asset asynchronously
       let githubDiagramBase64 = "";
       try {{
         githubDiagramBase64 = await getBase64ImageFromUrl(GITHUB_ASSET_URL);
@@ -442,7 +488,7 @@ html_code = f"""
       doc.setFont("Helvetica", "normal");
       doc.setFontSize(9);
       doc.text("Automatically Evaluated Zone: Shoulder to Elbow (Close)", 12, yPos); yPos += 5;
-      doc.text(`YOLO / Sensor Detected Object: ${{persistObject}}`, 12, yPos); yPos += 5;
+      doc.text(`Hand Detected Object: ${{persistObject}}`, 12, yPos); yPos += 5;
       doc.text(`Actual Weight Lifted: ${{actualWeight.toFixed(1)}} kg`, 12, yPos); yPos += 5;
       
       let maxLimit = evalProfile === "Male" ? 20.0 : 13.0;
@@ -491,7 +537,6 @@ html_code = f"""
         yPos += 5;
       }});
 
-      // Embed recommended_weight.png direct from GitHub asset
       yPos += 6;
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(10);
@@ -534,7 +579,7 @@ html_code = f"""
       doc.text("1. Object & Load Condition", 10, yPos); yPos += 6;
       doc.setFont("Helvetica", "normal");
       doc.setFontSize(8);
-      doc.text(`Object Detected: ${{persistObject}}`, 12, yPos); yPos += 5;
+      doc.text(`Hand Detected Object: ${{persistObject}}`, 12, yPos); yPos += 5;
       doc.text(`Actual Object Weight: ${{actualWeight.toFixed(1)}} kg`, 12, yPos); yPos += 8;
 
       doc.setFont("Helvetica", "bold");
