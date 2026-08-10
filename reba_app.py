@@ -42,9 +42,9 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     if not isinstance(audit_data, dict):
         audit_data = {}
         
-    score = int(audit_data.get("peak_reba_score", 12))
+    score = int(audit_data.get("peak_reba_score", 1))
     angles = audit_data.get("peak_angles", {})
-    dur = float(audit_data.get("total_duration", 12.4))
+    dur = float(audit_data.get("total_duration", 0.0))
     obj_detected = audit_data.get("object_detected", "Unidentified Object")
     if not obj_detected or obj_detected.strip() == "":
         obj_detected = "Unidentified Object"
@@ -130,13 +130,12 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 tmp.write(data)
                 tmp_img_path = tmp.name
-                pdf.image(tmp_img_path, x=10, y=curr_y, w=85, h=55)
-                image_rendered = True
+            pdf.image(tmp_img_path, x=10, y=curr_y, w=85, h=55)
+            image_rendered = True
         except Exception:
             image_rendered = False
 
     if not image_rendered:
-        # Fallback box when no new snapshot exists
         pdf.rect(10, curr_y, 85, 55)
         pdf.set_xy(10, curr_y + 25)
         pdf.set_font("Arial", 'I', 8)
@@ -150,12 +149,12 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf.cell(20, 4.5, "Score", border=1, align='C', ln=True)
 
     step_rows = [
-        ("Step 1: Neck", angles.get("neck", 121.4), angles.get("neck_score", 2)),
-        ("Step 2: Trunk", angles.get("trunk", 174.9), angles.get("trunk_score", 2)),
-        ("Step 3: Legs", angles.get("legs", 178.0), angles.get("legs_score", 1)),
-        ("Step 7: Upper Arm", angles.get("upper_arm", 45.4), angles.get("upper_arm_score", 3)),
-        ("Step 8: Lower Arm", angles.get("lower_arm", 46.6), angles.get("lower_arm_score", 2)),
-        ("Step 9: Wrist", angles.get("wrist", 114.1), angles.get("wrist_score", 2))
+        ("Step 1: Neck", angles.get("neck", 0.0), angles.get("neck_score", 1)),
+        ("Step 2: Trunk", angles.get("trunk", 180.0), angles.get("trunk_score", 1)),
+        ("Step 3: Legs", angles.get("legs", 180.0), angles.get("legs_score", 1)),
+        ("Step 7: Upper Arm", angles.get("upper_arm", 0.0), angles.get("upper_arm_score", 1)),
+        ("Step 8: Lower Arm", angles.get("lower_arm", 90.0), angles.get("lower_arm_score", 1)),
+        ("Step 9: Wrist", angles.get("wrist", 180.0), angles.get("wrist_score", 1))
     ]
 
     pdf.set_font("Arial", size=7.5)
@@ -340,7 +339,7 @@ html_code = """
 
   <div class="controls">
     <button id="toggleBtn" class="btn-toggle" onclick="toggleAnalysis()">▶ Start Analysis</button>
-    <button id="reportBtn" class="btn-report" onclick="downloadReport()">📄 Generate PDF Report</button>
+    <button id="reportBtn" class="btn-report" onclick="syncDataToStreamlit()">📄 Sync & Prepare Report</button>
   </div>
 
   <div class="metrics">
@@ -366,12 +365,10 @@ html_code = """
     let totalFramesRecorded = 0;
     let highRiskFrames = 0;
     
-    // IMAGE & MEMORY STATE VARIABLES
     let peakRebaScore = 0;
     let peakFrameBase64 = "";
     let lastValidCanvasFrame = "";
     let peakAngles = {};
-    let sessionSummary = null;
 
     const actualWeight = """ + str(actual_wt) + """;
 
@@ -379,22 +376,39 @@ html_code = """
       objectModel = model;
     });
 
-    // ERASE MEMORY AND RESET SESSIONS
     function resetSessionMemory() {
       peakRebaScore = 0;
       peakFrameBase64 = "";
       lastValidCanvasFrame = "";
       peakAngles = {};
-      sessionSummary = null;
       document.getElementById('peak_score').innerText = "1";
       document.getElementById('timer').innerText = "0.0s";
     }
 
+    function syncDataToStreamlit() {
+      const duration = startTime > 0 ? (Date.now() - startTime) / 1000.0 : 0.0;
+      const pctHighRisk = totalFramesRecorded > 0 ? (highRiskFrames / totalFramesRecorded) * 100.0 : 0.0;
+
+      const summary = {
+        peak_reba_score: peakRebaScore || parseInt(document.getElementById('live_score').innerText) || 1,
+        peak_angles: peakAngles,
+        peak_image_base64: peakFrameBase64 || lastValidCanvasFrame,
+        auto_zone: "Shoulder to Elbow",
+        auto_reach: "Close",
+        total_duration: duration,
+        pct_high_risk: pctHighRisk,
+        object_detected: persistObject !== "Unidentified Object" ? persistObject : currentObject
+      };
+
+      window.parent.postMessage({
+        type: 'streamlit:setComponentValue',
+        value: JSON.stringify(summary)
+      }, '*');
+    }
+
     function toggleAnalysis() {
       if (!isAnalyzing) {
-        // ALWAYS ERASE PICTURE MEMORY ON NEW ANALYSIS
         resetSessionMemory();
-
         isAnalyzing = true;
         startTime = Date.now();
         totalFramesRecorded = 0;
@@ -406,48 +420,8 @@ html_code = """
         isAnalyzing = false;
         toggleBtn.innerText = "▶ Start Analysis";
         toggleBtn.classList.remove("recording");
-
-        const duration = (Date.now() - startTime) / 1000.0;
-        const pctHighRisk = totalFramesRecorded > 0 ? (highRiskFrames / totalFramesRecorded) * 100.0 : 0.0;
-
-        sessionSummary = {
-          peak_reba_score: peakRebaScore || parseInt(document.getElementById('live_score').innerText) || 1,
-          peak_angles: peakAngles,
-          peak_image_base64: peakFrameBase64 || lastValidCanvasFrame,
-          auto_zone: "Shoulder to Elbow",
-          auto_reach: "Close",
-          total_duration: duration,
-          pct_high_risk: pctHighRisk,
-          object_detected: persistObject !== "Unidentified Object" ? persistObject : currentObject
-        };
-
-        const stringifiedData = JSON.stringify(sessionSummary);
-        window.parent.postMessage({
-          type: 'streamlit:setComponentValue',
-          value: stringifiedData
-        }, '*');
+        syncDataToStreamlit();
       }
-    }
-
-    function downloadReport() {
-      if (!sessionSummary) {
-        sessionSummary = {
-          peak_reba_score: peakRebaScore || parseInt(document.getElementById('peak_score').innerText) || 1,
-          peak_angles: peakAngles,
-          peak_image_base64: peakFrameBase64 || lastValidCanvasFrame,
-          auto_zone: "Shoulder to Elbow",
-          auto_reach: "Close",
-          total_duration: 0.0,
-          pct_high_risk: 0.0,
-          object_detected: persistObject !== "Unidentified Object" ? persistObject : currentObject
-        };
-      }
-
-      const stringifiedData = JSON.stringify(sessionSummary);
-      window.parent.postMessage({
-        type: 'streamlit:setComponentValue',
-        value: stringifiedData
-      }, '*');
     }
 
     function calcAngle(a, b, c) {
@@ -494,6 +468,11 @@ html_code = """
         drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
         drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2, radius: 4});
 
+        // CAPTURE CANVAS FRAME FIRST AFTER DRAWING
+        try {
+          lastValidCanvasFrame = canvasElement.toDataURL('image/jpeg', 0.85);
+        } catch(e){}
+
         let lm = results.poseLandmarks;
         let shld = lm[11], hip = lm[23], elbw = lm[13], nose = lm[0];
         let wrist = lm[15], index = lm[19], knee = lm[25], ankle = lm[27];
@@ -515,11 +494,6 @@ html_code = """
         let totalReba = tScore + nScore + aScore + laScore + lScore + wScore;
         document.getElementById('live_score').innerText = totalReba;
 
-        // CAPTURE CURRENT RENDERED FRAME
-        try {
-          lastValidCanvasFrame = canvasElement.toDataURL('image/jpeg', 0.85);
-        } catch(e){}
-
         let trunkDev = Math.abs(180 - angTrunk);
         let am = Math.max(0.0, 1.0 - (0.0032 * trunkDev));
         let rwl = 23.0 * 1.00 * 0.86 * 1.00 * am * 0.95 * 1.00;
@@ -539,6 +513,7 @@ html_code = """
             lower_arm: angLArm, lower_arm_score: laScore,
             wrist: angWrist, wrist_score: wScore
           };
+          syncDataToStreamlit();
         }
 
         if (isAnalyzing) {
@@ -569,24 +544,19 @@ html_code = """
 
 res = components.html(html_code, height=680)
 
+# STORE CAPTURED AUDIT DATA PERSISTENTLY IN STREAMLIT SESSION STATE
+if "audit_data" not in st.session_state:
+    st.session_state.audit_data = {}
+
 if res and isinstance(res, str):
     try:
-        st.session_state.audit_data = json.loads(res)
+        parsed_res = json.loads(res)
+        if parsed_res.get("peak_image_base64"):
+            st.session_state.audit_data = parsed_res
     except Exception:
         pass
 
-default_audit_data = {
-    "peak_reba_score": 12,
-    "peak_angles": {"neck": 121.4, "neck_score": 2, "trunk": 174.9, "trunk_score": 2, "legs": 178.0, "legs_score": 1, "upper_arm": 45.4, "upper_arm_score": 3, "lower_arm": 46.6, "lower_arm_score": 2, "wrist": 114.1, "wrist_score": 2},
-    "peak_image_base64": "",
-    "auto_zone": "Shoulder to Elbow",
-    "auto_reach": "Close",
-    "total_duration": 12.4,
-    "pct_high_risk": 0.0,
-    "object_detected": "Unidentified Object"
-}
-
-audit_data_to_use = st.session_state.get("audit_data", default_audit_data)
+audit_data_to_use = st.session_state.audit_data
 
 st.markdown("---")
 
