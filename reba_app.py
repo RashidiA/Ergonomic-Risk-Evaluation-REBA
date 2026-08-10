@@ -4,7 +4,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="Edge-AI REBA & Ergonomic Auditor", layout="wide")
 
 st.title("⚡ Edge-AI Client-Side REBA & Object Detection Auditor")
-st.caption("🚀 Real-Time Pose estimation, AR Skeleton, Object Detection & Client-Side PDF Generation")
+st.caption("🚀 Real-Time Pose estimation, AR Skeleton, Object Detection & 3-Page Client-Side PDF Generation")
 
 sidebar = st.sidebar
 op_id = sidebar.text_input("Operator ID", "OP-001")
@@ -44,7 +44,7 @@ html_code = f"""
 
   <div class="controls">
     <button id="toggleBtn" class="btn-toggle" onclick="toggleAnalysis()">▶ Start Analysis</button>
-    <button id="reportBtn" class="btn-report" onclick="downloadPdfReport()">📄 Download PDF Audit Report</button>
+    <button id="reportBtn" class="btn-report" onclick="downloadPdfReport()">📄 Download 3-Page PDF Report</button>
   </div>
 
   <div class="metrics">
@@ -68,9 +68,13 @@ html_code = f"""
     let isAnalyzing = false;
     let startTime = 0;
     let sessionDuration = 0;
-    let totalFramesRecorded = 0;
-    let highRiskFrames = 0;
     
+    // Frame distribution stats for % time breakdown
+    let totalFramesRecorded = 0;
+    let lowRiskFrames = 0;    // REBA 1-3
+    let mediumRiskFrames = 0; // REBA 4-7
+    let highRiskFrames = 0;   // REBA 8+
+
     let peakRebaScore = 1;
     let peakFrameBase64 = "";
     let lastValidCanvasFrame = "";
@@ -78,6 +82,8 @@ html_code = f"""
       neck: 0, trunk: 180, legs: 180, upper_arm: 0, lower_arm: 90, wrist: 180, 
       neck_score: 1, trunk_score: 1, legs_score: 1, upper_arm_score: 1, lower_arm_score: 1, wrist_score: 1 
     }};
+
+    let latestNiosh = {{ rwl: 18.8, li: 0.43, status: "SAFE", am: 1.0, hm: 1.0, vm: 0.86, dm: 1.0, fm: 0.95, cm: 1.0 }};
 
     const operatorId = "{op_id}";
     const evalProfile = "{profile}";
@@ -92,6 +98,11 @@ html_code = f"""
       peakFrameBase64 = "";
       lastValidCanvasFrame = "";
       sessionDuration = 0;
+      totalFramesRecorded = 0;
+      lowRiskFrames = 0;
+      mediumRiskFrames = 0;
+      highRiskFrames = 0;
+      
       peakAngles = {{ 
         neck: 0, trunk: 180, legs: 180, upper_arm: 0, lower_arm: 90, wrist: 180, 
         neck_score: 1, trunk_score: 1, legs_score: 1, upper_arm_score: 1, lower_arm_score: 1, wrist_score: 1 
@@ -105,9 +116,6 @@ html_code = f"""
         resetSessionMemory();
         isAnalyzing = true;
         startTime = Date.now();
-        totalFramesRecorded = 0;
-        highRiskFrames = 0;
-
         toggleBtn.innerText = "⏹ Stop Session";
         toggleBtn.classList.add("recording");
       }} else {{
@@ -187,12 +195,26 @@ html_code = f"""
         let totalReba = tScore + nScore + aScore + laScore + lScore + wScore;
         document.getElementById('live_score').innerText = totalReba;
 
+        // Track frame counts for time percentage breakdown
+        if (isAnalyzing) {{
+          totalFramesRecorded++;
+          if (totalReba <= 3) lowRiskFrames++;
+          else if (totalReba <= 7) mediumRiskFrames++;
+          else highRiskFrames++;
+          
+          sessionDuration = ((Date.now() - startTime) / 1000.0).toFixed(1);
+          document.getElementById('timer').innerText = sessionDuration + "s";
+        }}
+
+        // NIOSH Calculation
         let trunkDev = Math.abs(180 - angTrunk);
         let am = Math.max(0.0, 1.0 - (0.0032 * trunkDev));
         let rwl = 23.0 * 1.00 * 0.86 * 1.00 * am * 0.95 * 1.00;
         let li = actualWeight / Math.max(0.1, rwl);
-        let nioshText = li <= 1.0 ? `SAFE (LI ${{li.toFixed(2)}})` : `HIGH RISK (LI ${{li.toFixed(2)}})`;
-        document.getElementById('niosh_result').innerText = nioshText;
+        let status = li <= 1.0 ? "SAFE" : "HIGH RISK";
+        
+        latestNiosh = {{ rwl: rwl, li: li, status: status, am: am, hm: 1.0, vm: 0.86, dm: 1.0, fm: 0.95, cm: 1.0 }};
+        document.getElementById('niosh_result').innerText = `${{status}} (LI ${{li.toFixed(2)}})`;
 
         if (totalReba >= peakRebaScore) {{
           peakRebaScore = totalReba;
@@ -206,13 +228,6 @@ html_code = f"""
             lower_arm: angLArm, lower_arm_score: laScore,
             wrist: angWrist, wrist_score: wScore
           }};
-        }}
-
-        if (isAnalyzing) {{
-          totalFramesRecorded++;
-          if (totalReba >= 8) highRiskFrames++;
-          sessionDuration = ((Date.now() - startTime) / 1000.0).toFixed(1);
-          document.getElementById('timer').innerText = sessionDuration + "s";
         }}
       }}
       canvasCtx.restore();
@@ -237,7 +252,9 @@ html_code = f"""
       let imgToEmbed = peakFrameBase64 || lastValidCanvasFrame;
       let dur = isAnalyzing ? ((Date.now() - startTime) / 1000.0).toFixed(1) : sessionDuration;
 
+      // ==========================================
       // --- PAGE 1: REBA POSTURE AUDIT ---
+      // ==========================================
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(14);
       doc.text("REBA POSTURE AUDIT REPORT", 105, 12, {{ align: "center" }});
@@ -248,20 +265,20 @@ html_code = f"""
 
       // Posture Snapshot
       if (imgToEmbed && imgToEmbed.length > 100) {{
-        doc.addImage(imgToEmbed, 'JPEG', 10, 32, 90, 60);
+        doc.addImage(imgToEmbed, 'JPEG', 10, 32, 95, 65);
       }} else {{
-        doc.rect(10, 32, 90, 60);
+        doc.rect(10, 32, 95, 65);
         doc.setFontSize(8);
-        doc.text("[ Frame Snapshot Pending ]", 55, 62, {{ align: "center" }});
+        doc.text("[ Frame Snapshot Pending ]", 57, 65, {{ align: "center" }});
       }}
 
-      // Step-by-Step Joint Angles Table
+      // Joint Angles Table
       doc.setFontSize(9);
       doc.setFont("Helvetica", "bold");
-      doc.text("REBA Step / Joint", 110, 36);
-      doc.text("Angle (°)", 155, 36);
-      doc.text("Score", 185, 36);
-      doc.line(110, 38, 195, 38);
+      doc.text("REBA Step / Joint", 112, 36);
+      doc.text("Angle (°)", 158, 36);
+      doc.text("Score", 188, 36);
+      doc.line(112, 38, 198, 38);
 
       doc.setFont("Helvetica", "normal");
       doc.setFontSize(8);
@@ -276,14 +293,33 @@ html_code = f"""
 
       let yPos = 44;
       steps.forEach(row => {{
-        doc.text(row[0], 110, yPos);
-        doc.text(row[1], 155, yPos);
-        doc.text(row[2], 185, yPos);
+        doc.text(row[0], 112, yPos);
+        doc.text(row[1], 158, yPos);
+        doc.text(row[2], 188, yPos);
         yPos += 6;
       }});
 
+      // --- REBA ANALYSIS SCORE BY % (TIME) SECTION ---
+      yPos = 104;
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("REBA Posture Risk Time Exposure Breakdown (% Time)", 10, yPos);
+      yPos += 4;
+      doc.line(10, yPos, 198, yPos);
+      yPos += 5;
+
+      let totalF = totalFramesRecorded > 0 ? totalFramesRecorded : 1;
+      let lowPct = ((lowRiskFrames / totalF) * 100).toFixed(1);
+      let medPct = ((mediumRiskFrames / totalF) * 100).toFixed(1);
+      let highPct = ((highRiskFrames / totalF) * 100).toFixed(1);
+
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(8);
+      doc.text(`• Low Risk Duration (REBA 1 - 3): ${{lowPct}}% of total cycle time`, 12, yPos); yPos += 5;
+      doc.text(`• Medium Risk Duration (REBA 4 - 7): ${{medPct}}% of total cycle time`, 12, yPos); yPos += 5;
+      doc.text(`• High / Very High Risk Duration (REBA 8+): ${{highPct}}% of total cycle time`, 12, yPos); yPos += 8;
+
       // REBA Action Table
-      yPos = 100;
       doc.setFont("Helvetica", "bold");
       doc.setFontSize(9);
       doc.text("REBA Standard Action & Risk Table", 10, yPos);
@@ -308,17 +344,145 @@ html_code = f"""
 
         if (match) {{
           doc.setFillColor(255, 255, 0);
-          doc.rect(10, yPos - 4, 185, 6, 'F');
+          doc.rect(10, yPos - 4, 188, 6, 'F');
         }}
 
         doc.setFont("Helvetica", match ? "bold" : "normal");
         doc.text(`${{match ? '-> ' : ''}}${{r[0]}}`, 12, yPos);
         doc.text(r[1], 45, yPos);
-        doc.text(r[2], 90, yPos);
+        doc.text(r[2], 95, yPos);
         yPos += 6;
       }});
 
-      doc.save(`REBA_NIOSH_Audit_${{operatorId}}.pdf`);
+      // ==========================================
+      // --- PAGE 2: MANUAL MATERIAL HANDLING (MMH) ---
+      // ==========================================
+      doc.addPage();
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(14);
+      doc.text("MANUAL MATERIAL HANDLING (MMH) AUDIT REPORT", 105, 12, {{ align: "center" }});
+
+      doc.setFontSize(10);
+      doc.text(`Evaluation Profile: ${{evalProfile}} | Actual Load Lifted: ${{actualWeight}} kg`, 105, 18, {{ align: "center" }});
+
+      // Lifting Matrix Table
+      doc.setFontSize(9);
+      doc.text("Standard Recommended Weight Limit Matrix (kg)", 10, 30);
+
+      doc.line(10, 32, 198, 32);
+      doc.text("Lifting Zone / Location", 12, 37);
+      doc.text("Close Distance (kg)", 110, 37);
+      doc.text("Far Distance (kg)", 160, 37);
+      doc.line(10, 39, 198, 39);
+
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(8);
+      const matrixData = evalProfile === "Male" ? [
+        ["Above Shoulder", "10.0 kg", "5.0 kg"],
+        ["Shoulder to Elbow", "20.0 kg", "10.0 kg"],
+        ["Elbow to Knuckle", "25.0 kg", "15.0 kg"],
+        ["Knuckle to Mid-Leg", "20.0 kg", "10.0 kg"],
+        ["Below Mid-Leg", "10.0 kg", "5.0 kg"]
+      ] : [
+        ["Above Shoulder", "7.0 kg", "3.0 kg"],
+        ["Shoulder to Elbow", "13.0 kg", "7.0 kg"],
+        ["Elbow to Knuckle", "16.0 kg", "10.0 kg"],
+        ["Knuckle to Mid-Leg", "13.0 kg", "7.0 kg"],
+        ["Below Mid-Leg", "10.0 kg", "5.0 kg"]
+      ];
+
+      yPos = 45;
+      matrixData.forEach(row => {{
+        doc.text(row[0], 12, yPos);
+        doc.text(row[1], 110, yPos);
+        doc.text(row[2], 160, yPos);
+        yPos += 6;
+      }});
+
+      // MMH Assessment Summary
+      yPos += 10;
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("MMH Load Limit Compliance Summary", 10, yPos);
+      yPos += 6;
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(9);
+
+      let maxAllowable = evalProfile === "Male" ? 25.0 : 16.0;
+      let mmhExceeded = actualWeight > maxAllowable;
+
+      doc.text(`* Maximum Allowable Recommended Weight Limit (Ideal Zone): ${{maxAllowable}} kg`, 12, yPos); yPos += 6;
+      doc.text(`* Actual Lifted Weight Input: ${{actualWeight}} kg`, 12, yPos); yPos += 6;
+      doc.text(`* MMH Safety Status: ${{mmhExceeded ? 'EXCEEDED RECOMMENDED MAXIMUM LIMIT' : 'WITHIN RECOMMENDED SAFETY LIMITS'}}`, 12, yPos); yPos += 10;
+
+      doc.setFont("Helvetica", "bold");
+      doc.text("Ergonomic Control Measures & Recommendations:", 10, yPos); yPos += 6;
+      doc.setFont("Helvetica", "normal");
+      doc.text("1. Re-position material containers within the primary elbow-to-knuckle zone to minimize vertical reach.", 12, yPos); yPos += 6;
+      doc.text("2. Utilize mechanical lift assistance or team lifting if handling loads over standard recommended thresholds.", 12, yPos); yPos += 6;
+      doc.text("3. Eliminate excessive twisting or trunk lateral bending during manual transfer steps.", 12, yPos);
+
+      // ==========================================
+      // --- PAGE 3: NIOSH LIFTING EQUATION ---
+      // ==========================================
+      doc.addPage();
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(14);
+      doc.text("NIOSH LIFTING EQUATION AUDIT REPORT", 105, 12, {{ align: "center" }});
+
+      doc.setFontSize(10);
+      doc.text(`Calculated Load Weight: ${{actualWeight}} kg | Lifting Index (LI): ${{latestNiosh.li.toFixed(2)}}`, 105, 18, {{ align: "center" }});
+
+      // NIOSH Summary Box
+      doc.setFillColor(latestNiosh.li <= 1.0 ? 230 : 255, latestNiosh.li <= 1.0 ? 245 : 230, latestNiosh.li <= 1.0 ? 230 : 230);
+      doc.rect(10, 26, 188, 16, 'F');
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text(`NIOSH Lifting Status: ${{latestNiosh.status}}`, 15, 33);
+      doc.text(`Recommended Weight Limit (RWL): ${{latestNiosh.rwl.toFixed(2)}} kg`, 15, 39);
+
+      // NIOSH Multipliers Breakdown Table
+      yPos = 52;
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(9);
+      doc.text("NIOSH Multiplier Breakdown", 10, yPos); yPos += 4;
+      doc.line(10, yPos, 198, yPos); yPos += 5;
+
+      doc.text("Multiplier Component", 12, yPos);
+      doc.text("Symbol", 100, yPos);
+      doc.text("Evaluated Value", 150, yPos);
+      yPos += 2;
+      doc.line(10, yPos, 198, yPos); yPos += 5;
+
+      doc.setFont("Helvetica", "normal");
+      doc.setFontSize(8);
+      const nioshRows = [
+        ["Load Constant", "LC", "23.0 kg"],
+        ["Horizontal Multiplier", "HM", latestNiosh.hm.toFixed(2)],
+        ["Vertical Multiplier", "VM", latestNiosh.vm.toFixed(2)],
+        ["Distance Multiplier", "DM", latestNiosh.dm.toFixed(2)],
+        ["Asymmetric Multiplier", "AM", latestNiosh.am.toFixed(2)],
+        ["Frequency Multiplier", "FM", latestNiosh.fm.toFixed(2)],
+        ["Coupling Multiplier", "CM", latestNiosh.cm.toFixed(2)]
+      ];
+
+      nioshRows.forEach(row => {{
+        doc.text(row[0], 12, yPos);
+        doc.text(row[1], 100, yPos);
+        doc.text(row[2], 150, yPos);
+        yPos += 6;
+      }});
+
+      yPos += 8;
+      doc.setFont("Helvetica", "bold");
+      doc.setFontSize(9);
+      doc.text("NIOSH Risk Interpretation Guide:", 10, yPos); yPos += 5;
+      doc.setFont("Helvetica", "normal");
+      doc.text("• LI <= 1.0: Nominal risk to healthy industrial working populations.", 12, yPos); yPos += 5;
+      doc.text("• LI > 1.0: Elevated risk of lower back strain and musculoskeletal fatigue.", 12, yPos); yPos += 5;
+      doc.text("• LI > 3.0: High hazard task; immediate engineering intervention required.", 12, yPos);
+
+      doc.save(`REBA_NIOSH_MMH_Audit_${{operatorId}}.pdf`);
     }}
   </script>
 </body>
