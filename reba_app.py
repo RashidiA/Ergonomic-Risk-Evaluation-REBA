@@ -8,6 +8,10 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="Edge-AI REBA & Ergonomic Auditor", layout="wide")
 
+# Initialize session state for audit data
+if "audit_data" not in st.session_state:
+    st.session_state.audit_data = None
+
 # --- MANUAL MATERIAL HANDLING MATRIX ---
 LIFTING_MATRIX = {
     "Male": {
@@ -210,7 +214,7 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
 
 # --- STREAMLIT UI ---
 st.title("⚡ Edge-AI Client-Side REBA & Object Detection Auditor")
-st.caption("🚀 100% Client-Side Real-Time Pose estimation, AR Skeleton, Object Detection & Risk Analytics")
+st.caption("🚀 Real-Time Pose estimation, AR Skeleton, Object Detection & Risk Analytics")
 
 sidebar = st.sidebar
 op_id = sidebar.text_input("Operator ID", "OP-001")
@@ -225,7 +229,6 @@ html_code = """
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
-  <!-- COCO-SSD for Client-side Object Detection -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
 
@@ -276,10 +279,8 @@ html_code = """
     let peakFrameBase64 = "";
     let peakAngles = {};
 
-    // Load COCO-SSD Object Detection Model on Edge
     cocoSsd.load().then(model => {
       objectModel = model;
-      console.log("Edge Object Detection Model Loaded");
     });
 
     function startAnalysis() {
@@ -296,7 +297,7 @@ html_code = """
 
       const duration = (Date.now() - startTime) / 1000.0;
       const pctHighRisk = totalFramesRecorded > 0 ? (highRiskFrames / totalFramesRecorded) * 100.0 : 0.0;
-      const mainObj = detectedObjects.length > 0 ? detectedObjects[0] : "Box / Material";
+      const mainObj = detectedObjects.length > 0 ? detectedObjects[0] : "Material / Box";
 
       const payload = {
         peak_reba_score: peakRebaScore,
@@ -309,13 +310,15 @@ html_code = """
         object_detected: mainObj
       };
 
-      // Send to Streamlit Parent Session via Web API
-      window.parent.postMessage({
-        type: 'REBA_DATA_SYNC',
-        payload: payload
-      }, '*');
-
-      alert("Session completed! Download your 3-Page PDF Report below.");
+      // Direct Streamlit Custom Component Return Transmission
+      if (window.Streamlit) {
+        window.Streamlit.setComponentValue(payload);
+      } else {
+        window.parent.postMessage({
+          type: 'streamlit:setComponentValue',
+          value: payload
+        }, '*');
+      }
     }
 
     function calcAngle(a, b, c) {
@@ -332,7 +335,6 @@ html_code = """
       canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
       canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-      // --- 1. EDGE OBJECT DETECTION BOUNDING BOXES ---
       if (objectModel && videoElement.readyState === 4) {
         try {
           const predictions = await objectModel.detect(videoElement);
@@ -352,7 +354,6 @@ html_code = """
         } catch(e){}
       }
 
-      // --- 2. REAL-TIME AR SKELETON OVERLAY ---
       if (results.poseLandmarks) {
         drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00FF00', lineWidth: 3});
         drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#FF0000', lineWidth: 2, radius: 4});
@@ -420,33 +421,19 @@ html_code = """
 </html>
 """
 
-components.html(html_code, height=720)
+# Capture raw return payload directly from Streamlit HTML component
+component_payload = components.html(html_code, height=720)
 
-# JS Bridge to sync data safely without page reloads or AttributeError
-st.components.v1.html("""
-<script>
-window.addEventListener("message", (event) => {
-    if (event.data.type === "REBA_DATA_SYNC") {
-        window.parent.postMessage({
-            type: "streamlit:setComponentValue",
-            value: event.data.payload
-        }, "*");
-    }
-});
-</script>
-""", height=0)
+# If JavaScript posted back component data, persist it in st.session_state
+if component_payload:
+    st.session_state.audit_data = component_payload
 
 st.markdown("---")
 
-# Retrieve state safely
-if "audit_data" not in st.session_state:
-    st.session_state.audit_data = None
-
-rec_data = st.session_state.get("audit_data")
-
-if rec_data:
-    st.success("✅ Recorded session synced successfully!")
-    pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, rec_data)
+# Render PDF Download Button whenever audit_data exists
+if st.session_state.audit_data:
+    st.success("✅ Recorded session synced! Your report is ready.")
+    pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, st.session_state.audit_data)
     st.download_button(
         label="📥 Download 3-Page REBA + NIOSH PDF Report",
         data=pdf_bytes,
@@ -454,4 +441,4 @@ if rec_data:
         mime="application/pdf"
     )
 else:
-    st.info("💡 Click **'Start Analysis'** to begin monitoring, perform the lifting task, and click **'Stop & Sync Session'** to calculate metrics and unlock your report.")
+    st.info("💡 Click **'Start Analysis'**, perform the lifting movement, and click **'Stop & Sync Session'** to display the PDF download button.")
