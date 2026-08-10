@@ -28,6 +28,14 @@ def get_global_store():
         "frame": None,
         "peak_frame": None,          # Stores snapshot of the highest REBA posture frame
         "peak_reba_score": 0,        # Tracks maximum score achieved
+        "peak_angles": {            # Stores joint angles at the peak score frame
+            "neck": 0.0, "neck_score": 1,
+            "trunk": 0.0, "trunk_score": 1,
+            "legs": 0.0, "legs_score": 1,
+            "upper_arm": 0.0, "upper_arm_score": 1,
+            "lower_arm": 0.0, "lower_arm_score": 1,
+            "wrist": 0.0, "wrist_score": 1
+        },
         "total_duration": 0.0,
         "overall_score": 1,
         "last_detected_object": "None (Hands Free)",
@@ -59,7 +67,7 @@ def calculate_angle(a, b, c):
     angle = np.abs(radians * 180.0 / np.pi)
     return 360.0 - angle if angle > 180.0 else angle
 
-# --- REBA SCORING ENGINE ---
+# --- REBA SCORING ENGINES ---
 def score_trunk(angle):
     dev = abs(180 - angle)
     if dev <= 5: return 1
@@ -76,6 +84,11 @@ def score_upper_arm(angle):
     if angle <= 45: return 2
     if angle <= 90: return 3
     return 4
+
+def score_lower_arm(angle):
+    # Step 8: Lower Arm (60-100 deg = 1, <60 or >100 = 2)
+    if 60 <= angle <= 100: return 1
+    return 2
 
 def score_legs(knee_angle):
     flexion = abs(180.0 - knee_angle)
@@ -228,51 +241,53 @@ def get_ice_servers():
         {"urls": ["stun:stun2.l.google.com:19302"]}
     ]
 
-# --- 3-PAGE PDF GENERATOR WITH PEAK POSTURE SNAPSHOT ---
+# --- 3-PAGE PDF GENERATOR WITH PEAK POSTURE SNAPSHOT & JOINT ANGLES TABLE ---
 def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=False)
     
     # ================= PAGE 1: REBA POSTURE AUDIT =================
     pdf.add_page()
-    pdf.set_font("Arial", 'B', 15)
-    pdf.cell(0, 8, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
-    pdf.set_font("Arial", 'B', 10)
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 7, "REBA POSTURE AUDIT REPORT", ln=True, align='C')
+    pdf.set_font("Arial", 'B', 9.5)
     dur = store_data.get("total_duration", 0.0)
     pdf.cell(0, 5, f"Operator: {operator_id} | Total Duration: {dur:.1f} sec", ln=True, align='C')
     
     score = store_data.get("overall_score", 1)
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 7, f"Peak Evaluated REBA Score: {score}", ln=True, align='C')
-    pdf.ln(2)
+    pdf.set_font("Arial", 'B', 10.5)
+    pdf.cell(0, 6, f"Peak Evaluated REBA Score: {score}", ln=True, align='C')
+    pdf.ln(1)
     
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 5, "Full-Body Posture Duration Breakdown", ln=True)
-    pdf.set_font("Arial", 'B', 8.5)
-    pdf.cell(50, 5, "Body Part", border=1, align='C')
-    pdf.cell(45, 5, "Score 1-2 (%)", border=1, align='C')
-    pdf.cell(45, 5, "Score 3-4 (%)", border=1, align='C')
-    pdf.cell(45, 5, "Score 5+ (%)", border=1, align='C', ln=True)
+    # 1. Posture Duration Breakdown
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(0, 4.5, "Full-Body Posture Duration Breakdown", ln=True)
+    pdf.set_font("Arial", 'B', 8)
+    pdf.cell(50, 4.5, "Body Part", border=1, align='C')
+    pdf.cell(45, 4.5, "Score 1-2 (%)", border=1, align='C')
+    pdf.cell(45, 4.5, "Score 3-4 (%)", border=1, align='C')
+    pdf.cell(45, 4.5, "Score 5+ (%)", border=1, align='C', ln=True)
     
-    pdf.set_font("Arial", size=8.5)
+    pdf.set_font("Arial", size=8)
     breakdown = store_data.get("breakdown", {})
     for part in ["Trunk", "Neck", "Upper Arm", "Legs", "Wrists"]:
         stats = breakdown.get(part, {"1-2": 100.0, "3-4": 0.0, "5+": 0.0})
-        pdf.cell(50, 5, part, border=1)
-        pdf.cell(45, 5, f"{stats['1-2']:.1f}%", border=1, align='C')
-        pdf.cell(45, 5, f"{stats['3-4']:.1f}%", border=1, align='C')
-        pdf.cell(45, 5, f"{stats['5+']:.1f}%", border=1, align='C', ln=True)
+        pdf.cell(50, 4.5, part, border=1)
+        pdf.cell(45, 4.5, f"{stats['1-2']:.1f}%", border=1, align='C')
+        pdf.cell(45, 4.5, f"{stats['3-4']:.1f}%", border=1, align='C')
+        pdf.cell(45, 4.5, f"{stats['5+']:.1f}%", border=1, align='C', ln=True)
         
-    pdf.ln(2)
+    pdf.ln(1.5)
     
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 5, "REBA Standard Action & Risk Table", ln=True)
-    pdf.set_font("Arial", 'B', 8.5)
-    pdf.cell(35, 5, "REBA Score", border=1, align='C')
-    pdf.cell(50, 5, "Risk Level", border=1, align='C')
-    pdf.cell(105, 5, "Action Required", border=1, align='C', ln=True)
+    # 2. Action Table
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(0, 4.5, "REBA Standard Action & Risk Table", ln=True)
+    pdf.set_font("Arial", 'B', 8)
+    pdf.cell(35, 4.5, "REBA Score", border=1, align='C')
+    pdf.cell(50, 4.5, "Risk Level", border=1, align='C')
+    pdf.cell(100, 4.5, "Action Required", border=1, align='C', ln=True)
     
-    pdf.set_font("Arial", size=8.5)
+    pdf.set_font("Arial", size=8)
     for r_score, r_level, r_action in REBA_ACTION_TABLE:
         if r_score == "1": is_match = (score == 1)
         elif r_score == "2-3": is_match = (score in [2, 3])
@@ -284,28 +299,53 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
         fill_flag = is_match
         if fill_flag: pdf.set_fill_color(255, 255, 0)
 
-        pdf.cell(35, 5, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
-        pdf.cell(50, 5, r_level, border=1, fill=fill_flag)
-        pdf.cell(105, 5, r_action, border=1, ln=True, fill=fill_flag)
+        pdf.cell(35, 4.5, f"{prefix}{r_score}", border=1, align='C', fill=fill_flag)
+        pdf.cell(50, 4.5, r_level, border=1, fill=fill_flag)
+        pdf.cell(100, 4.5, r_action, border=1, ln=True, fill=fill_flag)
 
-    pdf.ln(3)
+    pdf.ln(2)
 
-    # --- EMBED PEAK REBA POSTURE SNAPSHOT ---
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(0, 5, "Peak REBA Posture Snapshot (Worst Observed Risk Point)", ln=True)
+    # 3. Peak Frame Snapshot & Steps Breakdown
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(0, 4.5, "Peak REBA Posture Snapshot & Step-by-Step Joint Angles", ln=True)
     
     peak_img = store_data.get("peak_frame")
     tmp_peak_path = None
+    curr_y = pdf.get_y() + 1
 
     if peak_img is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            # Convert BGR to RGB for correct PDF coloring
             cv2.imwrite(tmp.name, peak_img)
             tmp_peak_path = tmp.name
-            pdf.image(tmp_peak_path, x=45, y=pdf.get_y() + 2, w=120)
+            # Embed image on the left side
+            pdf.image(tmp_peak_path, x=10, y=curr_y, w=85)
     else:
-        pdf.set_font("Arial", 'I', 8.5)
-        pdf.cell(0, 5, "No video snapshot recorded.", ln=True)
+        pdf.set_font("Arial", 'I', 8)
+        pdf.text(10, curr_y + 10, "No video snapshot recorded.")
+
+    # 4. Joint Angles & REBA Steps Table (Placed on the right side)
+    pdf.set_xy(100, curr_y)
+    pdf.set_font("Arial", 'B', 8)
+    pdf.cell(40, 4.5, "REBA Step / Joint", border=1, align='C')
+    pdf.cell(25, 4.5, "Angle (°)", border=1, align='C')
+    pdf.cell(20, 4.5, "Score", border=1, align='C', ln=True)
+
+    angles = store_data.get("peak_angles", {})
+    step_rows = [
+        ("Step 1: Neck", angles.get("neck", 0.0), angles.get("neck_score", 1)),
+        ("Step 2: Trunk", angles.get("trunk", 0.0), angles.get("trunk_score", 1)),
+        ("Step 3: Legs", angles.get("legs", 0.0), angles.get("legs_score", 1)),
+        ("Step 7: Upper Arm", angles.get("upper_arm", 0.0), angles.get("upper_arm_score", 1)),
+        ("Step 8: Lower Arm", angles.get("lower_arm", 0.0), angles.get("lower_arm_score", 1)),
+        ("Step 9: Wrist", angles.get("wrist", 0.0), angles.get("wrist_score", 1))
+    ]
+
+    pdf.set_font("Arial", size=7.5)
+    for step_label, angle_val, p_score in step_rows:
+        pdf.set_x(100)
+        pdf.cell(40, 4.5, step_label, border=1)
+        pdf.cell(25, 4.5, f"{angle_val:.1f}°", border=1, align='C')
+        pdf.cell(20, 4.5, f"+{p_score}", border=1, align='C', ln=True)
 
     if tmp_peak_path and os.path.exists(tmp_peak_path):
         os.unlink(tmp_peak_path)
@@ -457,7 +497,7 @@ def generate_custom_pdf(operator_id, profile, actual_weight, store_data):
 
     return bytes(pdf.output())
 
-# --- HYBRID VIDEO PROCESSOR WITH PEAK FRAME RECORDING ---
+# --- HYBRID VIDEO PROCESSOR WITH PEAK FRAME & ANGLES RECORDING ---
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
@@ -518,13 +558,23 @@ class REBAProcessor(VideoProcessorBase):
             hy2 = min(h, int(max(hand_ys) + pad_y))
             self.hand_box = (hx1, hy1, hx2, hy2)
 
-            t_score = score_trunk(calculate_angle(shld, hip, knee))
-            a_score = score_upper_arm(calculate_angle(hip, shld, elbw))
-            n_score = score_neck(calculate_angle(nose, shld, hip))
-            l_score = score_legs(calculate_angle(hip, knee, ankle))
-            w_score = score_wrists(calculate_angle(elbw, l_wrist, l_index))
+            # Joint Angle Calculations
+            ang_trunk = calculate_angle(shld, hip, knee)
+            ang_neck = calculate_angle(nose, shld, hip)
+            ang_uarm = calculate_angle(hip, shld, elbw)
+            ang_larm = calculate_angle(shld, elbw, l_wrist)
+            ang_legs = calculate_angle(hip, knee, ankle)
+            ang_wrist = calculate_angle(elbw, l_wrist, l_index)
 
-            total_reba = t_score + n_score + a_score + l_score + w_score
+            # Partial REBA Scores
+            t_score = score_trunk(ang_trunk)
+            n_score = score_neck(ang_neck)
+            a_score = score_upper_arm(ang_uarm)
+            la_score = score_lower_arm(ang_larm)
+            l_score = score_legs(ang_legs)
+            w_score = score_wrists(ang_wrist)
+
+            total_reba = t_score + n_score + a_score + la_score + l_score + w_score
 
             avg_wrist_y = (l_wrist[1] + r_wrist[1]) / 2.0
             if avg_wrist_y < shld[1]: detected_zone = "Above Shoulder"
@@ -540,7 +590,7 @@ class REBAProcessor(VideoProcessorBase):
             h_cm = abs(l_wrist[0] - ankle[0]) * scale_px_to_cm
             v_cm = abs(ankle[1] - l_wrist[1]) * scale_px_to_cm
             d_cm = abs(shld[1] - l_wrist[1]) * scale_px_to_cm
-            angle_deg = abs(180.0 - calculate_angle(shld, hip, knee))
+            angle_deg = abs(180.0 - ang_trunk)
 
             # --- DUAL-ENGINE OBJECT DETECTION (EVERY 5 FRAMES) ---
             if self.total_frames % 5 == 0:
@@ -613,10 +663,18 @@ class REBAProcessor(VideoProcessorBase):
             cv2.putText(img, f"REBA Score: {total_reba}", (10, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-            # --- CAPTURE PEAK REBA FRAME SNAPSHOT ---
+            # --- CAPTURE PEAK REBA FRAME SNAPSHOT & ANGLES ---
             if total_reba >= GLOBAL_STORE.get("peak_reba_score", 0):
                 GLOBAL_STORE["peak_reba_score"] = total_reba
                 GLOBAL_STORE["peak_frame"] = img.copy()
+                GLOBAL_STORE["peak_angles"] = {
+                    "neck": ang_neck, "neck_score": n_score,
+                    "trunk": ang_trunk, "trunk_score": t_score,
+                    "legs": ang_legs, "legs_score": l_score,
+                    "upper_arm": ang_uarm, "upper_arm_score": a_score,
+                    "lower_arm": ang_larm, "lower_arm_score": la_score,
+                    "wrist": ang_wrist, "wrist_score": w_score
+                }
 
             GLOBAL_STORE["total_duration"] = time.time() - self.start_time
             GLOBAL_STORE["overall_score"] = max(GLOBAL_STORE["overall_score"], total_reba)
@@ -644,6 +702,14 @@ with st.sidebar:
         GLOBAL_STORE["peak_reba_score"] = 0
         GLOBAL_STORE["overall_score"] = 1
         GLOBAL_STORE["peak_frame"] = None
+        GLOBAL_STORE["peak_angles"] = {
+            "neck": 0.0, "neck_score": 1,
+            "trunk": 0.0, "trunk_score": 1,
+            "legs": 0.0, "legs_score": 1,
+            "upper_arm": 0.0, "upper_arm_score": 1,
+            "lower_arm": 0.0, "lower_arm_score": 1,
+            "wrist": 0.0, "wrist_score": 1
+        }
         st.success("Session state & peak snapshot reset!")
 
 ctx = webrtc_streamer(
