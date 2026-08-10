@@ -8,7 +8,7 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="Edge-AI REBA & Ergonomic Auditor", layout="wide")
 
-# Initialize session state for audit data
+# Initialize session state for audit data safely
 if "audit_data" not in st.session_state:
     st.session_state.audit_data = None
 
@@ -43,6 +43,10 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=False)
     
+    # Ensure audit_data is a dictionary
+    if not isinstance(audit_data, dict):
+        audit_data = {}
+        
     score = int(audit_data.get("peak_reba_score", 1))
     angles = audit_data.get("peak_angles", {})
     dur = float(audit_data.get("total_duration", 0.0))
@@ -310,15 +314,13 @@ html_code = """
         object_detected: mainObj
       };
 
-      // Direct Streamlit Custom Component Return Transmission
-      if (window.Streamlit) {
-        window.Streamlit.setComponentValue(payload);
-      } else {
-        window.parent.postMessage({
-          type: 'streamlit:setComponentValue',
-          value: payload
-        }, '*');
-      }
+      // Safely dispatch stream data back to Streamlit host
+      window.parent.postMessage({
+        type: 'REBA_DATA_SYNC',
+        payload: payload
+      }, '*');
+      
+      alert("Session saved! Generating report...");
     }
 
     function calcAngle(a, b, c) {
@@ -421,17 +423,36 @@ html_code = """
 </html>
 """
 
-# Capture raw return payload directly from Streamlit HTML component
-component_payload = components.html(html_code, height=720)
+# Render Component
+components.html(html_code, height=720)
 
-# If JavaScript posted back component data, persist it in st.session_state
-if component_payload:
-    st.session_state.audit_data = component_payload
+# JS Bridge to listen to postMessage and put data into query params safely
+components.html("""
+<script>
+window.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "REBA_DATA_SYNC") {
+        const payloadStr = encodeURIComponent(JSON.stringify(event.data.payload));
+        const url = new URL(window.parent.location.href);
+        url.searchParams.set("audit_payload", payloadStr);
+        window.parent.location.href = url.href;
+    }
+});
+</script>
+""", height=0)
 
 st.markdown("---")
 
-# Render PDF Download Button whenever audit_data exists
-if st.session_state.audit_data:
+# Retrieve synced dictionary payload safely from Streamlit query params
+query_params = st.query_params
+if "audit_payload" in query_params:
+    try:
+        raw_json = query_params["audit_payload"]
+        st.session_state.audit_data = json.loads(raw_json)
+    except Exception:
+        pass
+
+# Render PDF Download Button whenever session data exists
+if isinstance(st.session_state.audit_data, dict) and st.session_state.audit_data:
     st.success("✅ Recorded session synced! Your report is ready.")
     pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, st.session_state.audit_data)
     st.download_button(
