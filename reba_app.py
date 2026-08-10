@@ -3,7 +3,7 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Edge-AI REBA & Ergonomic Auditor", layout="wide")
 
-st.title("⚡ Edge-AI Client-Side REBA & Object Detection Auditor")
+st.title("⚡ Real Time REBA & NIOSH Lifting Equation Auditor")
 st.caption("🚀 Real-Time Pose estimation, AR Skeleton, Hand-Targeted Object Detection & 3-Page PDF Generation")
 
 sidebar = st.sidebar
