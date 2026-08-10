@@ -4,8 +4,6 @@ import json
 import base64
 import tempfile
 import os
-import cv2
-import numpy as np
 from fpdf import FPDF
 
 st.set_page_config(page_title="Edge AI REBA & NIOSH Auditor", layout="wide")
@@ -41,9 +39,10 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=False)
     
-    score = audit_data.get("peak_reba_score", 1)
+    # Safe dictionary extraction
+    score = int(audit_data.get("peak_reba_score", 1))
     angles = audit_data.get("peak_angles", {})
-    dur = audit_data.get("total_duration", 0.0)
+    dur = float(audit_data.get("total_duration", 0.0))
 
     # ================= PAGE 1: REBA POSTURE AUDIT =================
     pdf.add_page()
@@ -82,7 +81,7 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
 
     pdf.ln(3)
 
-    # Embed Peak Frame Snapshot & Angles Breakdown Side-by-Side
+    # Embed Peak Frame Snapshot & Angles Breakdown
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(0, 4.5, "Peak REBA Posture Snapshot & Step-by-Step Joint Angles", ln=True)
     curr_y = pdf.get_y() + 1
@@ -91,12 +90,15 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     tmp_img_path = None
 
     if img_b64 and "," in img_b64:
-        header, encoded = img_b64.split(",", 1)
-        data = base64.b64decode(encoded)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            tmp.write(data)
-            tmp_img_path = tmp.name
-            pdf.image(tmp_img_path, x=10, y=curr_y, w=85)
+        try:
+            header, encoded = img_b64.split(",", 1)
+            data = base64.b64decode(encoded)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                tmp.write(data)
+                tmp_img_path = tmp.name
+                pdf.image(tmp_img_path, x=10, y=curr_y, w=85)
+        except Exception as e:
+            st.warning(f"Image decode warning: {e}")
 
     # REBA Steps Angle Table
     pdf.set_xy(100, curr_y)
@@ -118,7 +120,7 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     for step_label, angle_val, p_score in step_rows:
         pdf.set_x(100)
         pdf.cell(40, 4.5, step_label, border=1)
-        pdf.cell(25, 4.5, f"{angle_val:.1f}°", border=1, align='C')
+        pdf.cell(25, 4.5, f"{float(angle_val):.1f}°", border=1, align='C')
         pdf.cell(20, 4.5, f"+{p_score}", border=1, align='C', ln=True)
 
     if tmp_img_path and os.path.exists(tmp_img_path):
@@ -164,7 +166,6 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
         is_active_zone = (z_name == auto_zone)
         prefix = "-> " if is_active_zone else ""
         pdf.cell(65, 6, f"{prefix}{z_name}", border=1)
-        
         pdf.cell(60, 6, f"{vals['Close']:.1f} kg", border=1, align='C', fill=(is_active_zone and auto_reach == "Close"))
         pdf.cell(60, 6, f"{vals['Far']:.1f} kg", border=1, align='C', fill=(is_active_zone and auto_reach == "Far"), ln=True)
 
@@ -180,11 +181,8 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     pdf.cell(0, 5, f"Operator: {operator_id}", ln=True, align='C')
     pdf.ln(3)
 
-    # Simplified NIOSH parameters from joint angles
-    trunk_dev = abs(180 - angles.get("trunk", 180.0))
-    hm = 0.83
-    vm = 1.00
-    dm = 1.00
+    trunk_dev = abs(180 - float(angles.get("trunk", 180.0)))
+    hm, vm, dm = 0.83, 1.00, 1.00
     am = max(0.0, 1.0 - (0.0032 * trunk_dev))
     rwl = 23.0 * hm * vm * dm * am * 0.95 * 1.00
     li = actual_weight / max(0.1, rwl)
@@ -218,6 +216,19 @@ op_id = sidebar.text_input("Operator ID", "OP-001")
 profile = sidebar.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
 actual_wt = sidebar.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
 
+# Manage state for peak audit data
+if "audit_data" not in st.session_state:
+    st.session_state.audit_data = None
+
+# Receive JSON data sent via query params from JS
+query_params = st.query_params
+if "payload" in query_params:
+    try:
+        raw_payload = query_params["payload"]
+        st.session_state.audit_data = json.loads(raw_payload)
+    except Exception as e:
+        st.error(f"Error parsing peak data payload: {e}")
+
 # --- EMBEDDED MEDIAPIPE JS CLIENT ENGINE ---
 html_code = """
 <!DOCTYPE html>
@@ -231,6 +242,7 @@ html_code = """
     canvas { position: absolute; top: 0; left: 0; }
     .metrics { margin-top: 10px; font-family: sans-serif; display: flex; gap: 15px; }
     .card { background: #f0f2f6; padding: 10px; border-radius: 6px; flex: 1; text-align: center; }
+    button { background-color: #ff4b4b; color: white; border: none; padding: 10px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -243,6 +255,8 @@ html_code = """
     <div class="card"><strong>Live REBA Score</strong><h2 id="live_score">1</h2></div>
     <div class="card"><strong>Peak REBA Score</strong><h2 id="peak_score">1</h2></div>
   </div>
+  
+  <button onclick="syncPeakData()">Sync Peak Data to Server</button>
 
   <script>
     const videoElement = document.getElementById('webcam');
@@ -254,9 +268,25 @@ html_code = """
     let peakAngles = {};
 
     function calcAngle(a, b, c) {
-      let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+      let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.a - b.y, a.x - b.x);
       let angle = Math.abs(radians * 180.0 / Math.PI);
       return angle > 180.0 ? 360.0 - angle : angle;
+    }
+
+    function syncPeakData() {
+      const payload = {
+        peak_reba_score: peakRebaScore,
+        peak_angles: peakAngles,
+        peak_image_base64: peakFrameBase64,
+        auto_zone: "Elbow to Knuckle",
+        auto_reach: "Close",
+        total_duration: 10.0
+      };
+      
+      const jsonStr = JSON.stringify(payload);
+      const url = new URL(window.parent.location.href);
+      url.searchParams.set("payload", jsonStr);
+      window.parent.location.href = url.href;
     }
 
     function onResults(results) {
@@ -269,7 +299,6 @@ html_code = """
 
       if (results.poseLandmarks) {
         let lm = results.poseLandmarks;
-        
         let shld = lm[11], hip = lm[23], elbw = lm[13], nose = lm[0];
         let wrist = lm[15], index = lm[19], knee = lm[25], ankle = lm[27];
 
@@ -288,7 +317,6 @@ html_code = """
         let wScore = Math.abs(180 - angWrist) <= 15 ? 1 : 2;
 
         let totalReba = tScore + nScore + aScore + laScore + lScore + wScore;
-
         document.getElementById('live_score').innerText = totalReba;
 
         if (totalReba >= peakRebaScore) {
@@ -303,21 +331,6 @@ html_code = """
             lower_arm: angLArm, lower_arm_score: laScore,
             wrist: angWrist, wrist_score: wScore
           };
-
-          // Send data back to Streamlit
-          const payload = {
-            peak_reba_score: peakRebaScore,
-            peak_angles: peakAngles,
-            peak_image_base64: peakFrameBase64,
-            auto_zone: "Elbow to Knuckle",
-            auto_reach: "Close",
-            total_duration: 10.0
-          };
-
-          window.parent.postMessage({
-            type: 'streamlit:setComponentValue',
-            value: payload
-          }, '*');
         }
       }
       canvasCtx.restore();
@@ -339,13 +352,13 @@ html_code = """
 </html>
 """
 
-# Render client-side HTML/JS component
-client_data = components.html(html_code, height=620)
+components.html(html_code, height=650)
 
 st.markdown("---")
 
-if client_data:
-    pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, client_data)
+# Render download button when data is synchronized
+if st.session_state.audit_data:
+    pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, st.session_state.audit_data)
     st.download_button(
         label="📥 Download 3-Page REBA + NIOSH PDF Report",
         data=pdf_bytes,
@@ -353,4 +366,4 @@ if client_data:
         mime="application/pdf"
     )
 else:
-    st.info("💡 Grant camera permission above to activate Edge AI tracking.")
+    st.info("💡 Grant camera permission above, run live pose estimation, then click 'Sync Peak Data' to enable PDF generation.")
