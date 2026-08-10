@@ -136,13 +136,13 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
             image_rendered = False
 
     if not image_rendered:
-        # Fallback placeholder box so layout stays identical
+        # Fallback box when no new snapshot exists
         pdf.rect(10, curr_y, 85, 55)
         pdf.set_xy(10, curr_y + 25)
         pdf.set_font("Arial", 'I', 8)
-        pdf.cell(85, 5, "[ Live Posture Snapshot Captured ]", align='C')
+        pdf.cell(85, 5, "[ New Posture Snapshot Pending ]", align='C')
 
-    # Angles Breakdown Table (Positioned right beside the image/box)
+    # Angles Breakdown Table
     pdf.set_xy(100, curr_y)
     pdf.set_font("Arial", 'B', 8)
     pdf.cell(40, 4.5, "REBA Step / Joint", border=1, align='C')
@@ -356,7 +356,6 @@ html_code = """
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
     const toggleBtn = document.getElementById('toggleBtn');
-    const reportBtn = document.getElementById('reportBtn');
 
     let objectModel = null;
     let currentObject = "Unidentified Object";
@@ -366,6 +365,8 @@ html_code = """
     let startTime = 0;
     let totalFramesRecorded = 0;
     let highRiskFrames = 0;
+    
+    // IMAGE & MEMORY STATE VARIABLES
     let peakRebaScore = 0;
     let peakFrameBase64 = "";
     let lastValidCanvasFrame = "";
@@ -378,14 +379,26 @@ html_code = """
       objectModel = model;
     });
 
+    // ERASE MEMORY AND RESET SESSIONS
+    function resetSessionMemory() {
+      peakRebaScore = 0;
+      peakFrameBase64 = "";
+      lastValidCanvasFrame = "";
+      peakAngles = {};
+      sessionSummary = null;
+      document.getElementById('peak_score').innerText = "1";
+      document.getElementById('timer').innerText = "0.0s";
+    }
+
     function toggleAnalysis() {
       if (!isAnalyzing) {
+        // ALWAYS ERASE PICTURE MEMORY ON NEW ANALYSIS
+        resetSessionMemory();
+
         isAnalyzing = true;
         startTime = Date.now();
         totalFramesRecorded = 0;
         highRiskFrames = 0;
-        peakRebaScore = 0;
-        sessionSummary = null;
 
         toggleBtn.innerText = "⏹ Stop Session";
         toggleBtn.classList.add("recording");
@@ -398,7 +411,7 @@ html_code = """
         const pctHighRisk = totalFramesRecorded > 0 ? (highRiskFrames / totalFramesRecorded) * 100.0 : 0.0;
 
         sessionSummary = {
-          peak_reba_score: peakRebaScore || parseInt(document.getElementById('live_score').innerText) || 12,
+          peak_reba_score: peakRebaScore || parseInt(document.getElementById('live_score').innerText) || 1,
           peak_angles: peakAngles,
           peak_image_base64: peakFrameBase64 || lastValidCanvasFrame,
           auto_zone: "Shoulder to Elbow",
@@ -419,12 +432,12 @@ html_code = """
     function downloadReport() {
       if (!sessionSummary) {
         sessionSummary = {
-          peak_reba_score: peakRebaScore || parseInt(document.getElementById('peak_score').innerText) || 12,
+          peak_reba_score: peakRebaScore || parseInt(document.getElementById('peak_score').innerText) || 1,
           peak_angles: peakAngles,
           peak_image_base64: peakFrameBase64 || lastValidCanvasFrame,
           auto_zone: "Shoulder to Elbow",
           auto_reach: "Close",
-          total_duration: 12.4,
+          total_duration: 0.0,
           pct_high_risk: 0.0,
           object_detected: persistObject !== "Unidentified Object" ? persistObject : currentObject
         };
@@ -502,9 +515,9 @@ html_code = """
         let totalReba = tScore + nScore + aScore + laScore + lScore + wScore;
         document.getElementById('live_score').innerText = totalReba;
 
-        // Keep updating latest valid canvas frame
+        // CAPTURE CURRENT RENDERED FRAME
         try {
-          lastValidCanvasFrame = canvasElement.toDataURL('image/jpeg', 0.80);
+          lastValidCanvasFrame = canvasElement.toDataURL('image/jpeg', 0.85);
         } catch(e){}
 
         let trunkDev = Math.abs(180 - angTrunk);
