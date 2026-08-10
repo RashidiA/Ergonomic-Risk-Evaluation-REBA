@@ -224,17 +224,10 @@ op_id = sidebar.text_input("Operator ID", "OP-001")
 profile = sidebar.selectbox("Evaluation Profile / Gender", ["Male", "Female"])
 actual_wt = sidebar.number_input("Actual Weight Lifted (kg)", min_value=0.0, max_value=50.0, value=8.0, step=0.5)
 
-# Build custom component files dynamically in a local folder
-COMPONENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "edge_component")
-os.makedirs(COMPONENT_DIR, exist_ok=True)
-
 html_code = """
 <!DOCTYPE html>
 <html>
 <head>
-  <!-- Official Streamlit Component Library Bridge -->
-  <script src="https://unpkg.com/streamlit-component-lib@^1.4.0/dist/streamlit-component-lib.js"></script>
-  
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
@@ -274,9 +267,6 @@ html_code = """
   </div>
 
   <script>
-    Streamlit.setComponentReady();
-    Streamlit.setFrameHeight(680);
-
     const videoElement = document.getElementById('webcam');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
@@ -323,8 +313,12 @@ html_code = """
         object_detected: mainObj
       };
 
-      // Direct Streamlit Value Push (Instant Rerun in Streamlit Python)
-      Streamlit.setComponentValue(payload);
+      // Send payload via Streamlit custom event
+      const stringifiedData = JSON.stringify(payload);
+      window.parent.postMessage({
+        type: 'streamlit:setComponentValue',
+        value: stringifiedData
+      }, '*');
     }
 
     function calcAngle(a, b, c) {
@@ -427,22 +421,19 @@ html_code = """
 </html>
 """
 
-# Write HTML file locally for component registration
-with open(os.path.join(COMPONENT_DIR, "index.html"), "w", encoding="utf-8") as f:
-    f.write(html_code)
+# Render standard Streamlit HTML component directly
+res = components.html(html_code, height=680)
 
-# Register custom component
-reba_edge_component = components.declare_component("reba_edge_component", path=COMPONENT_DIR)
-
-# Render Component & Capture Return Dict Directly
-received_payload = reba_edge_component()
-
-if received_payload and isinstance(received_payload, dict):
-    st.session_state.audit_data = received_payload
+# Store received data safely
+if res and isinstance(res, str):
+    try:
+        st.session_state.audit_data = json.loads(res)
+    except Exception:
+        pass
 
 st.markdown("---")
 
-# Render PDF Download Button
+# Render PDF Download Button when session data is available
 if isinstance(st.session_state.audit_data, dict) and st.session_state.audit_data:
     st.success("✅ Recorded session synced! Your report is ready.")
     pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, st.session_state.audit_data)
