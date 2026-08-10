@@ -8,10 +8,6 @@ from fpdf import FPDF
 
 st.set_page_config(page_title="Edge-AI REBA & Ergonomic Auditor", layout="wide")
 
-# Initialize session state for audit data
-if "audit_data" not in st.session_state:
-    st.session_state.audit_data = None
-
 # --- MANUAL MATERIAL HANDLING MATRIX ---
 LIFTING_MATRIX = {
     "Male": {
@@ -50,7 +46,7 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
     angles = audit_data.get("peak_angles", {})
     dur = float(audit_data.get("total_duration", 0.0))
     pct_high_risk = float(audit_data.get("pct_high_risk", 0.0))
-    obj_detected = audit_data.get("object_detected", "Not Detected")
+    obj_detected = audit_data.get("object_detected", "unidentified object")
 
     # ================= PAGE 1: REBA POSTURE & OBJECT DETECTION =================
     pdf.add_page()
@@ -240,9 +236,11 @@ html_code = """
     video { display: none; }
     canvas { width: 100%; height: auto; border-radius: 8px; background: #000; }
     .controls { display: flex; gap: 12px; margin-top: 10px; justify-content: center; }
-    button { padding: 10px 20px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white; font-size: 14px; }
-    .btn-start { background-color: #28a745; }
-    .btn-stop { background-color: #dc3545; }
+    button { padding: 12px 24px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white; font-size: 15px; transition: all 0.2s; }
+    .btn-toggle { background-color: #28a745; }
+    .btn-toggle.recording { background-color: #dc3545; }
+    .btn-report { background-color: #0d6efd; margin-left: 10px; }
+    .btn-report:disabled { background-color: #6c757d; cursor: not-allowed; opacity: 0.6; }
     .metrics { margin-top: 12px; display: flex; gap: 10px; }
     .card { background: #f0f2f6; padding: 10px; border-radius: 6px; flex: 1; text-align: center; }
   </style>
@@ -254,15 +252,15 @@ html_code = """
   </div>
 
   <div class="controls">
-    <button class="btn-start" onclick="startAnalysis()">▶ Start Analysis</button>
-    <button class="btn-stop" onclick="stopAnalysis()">⏹ Stop & Sync Session</button>
+    <button id="toggleBtn" class="btn-toggle" onclick="toggleAnalysis()">▶ Start Analysis</button>
+    <button id="reportBtn" class="btn-report" onclick="downloadReport()" disabled>📄 Generate PDF Report</button>
   </div>
 
   <div class="metrics">
     <div class="card"><strong>Live REBA</strong><h2 id="live_score">1</h2></div>
     <div class="card"><strong>Peak REBA</strong><h2 id="peak_score">1</h2></div>
     <div class="card"><strong>High Risk %</strong><h2 id="high_risk_pct">0%</h2></div>
-    <div class="card"><strong>Object Detected</strong><h2 id="object_detected" style="font-size: 18px;">None</h2></div>
+    <div class="card"><strong>Object Detected</strong><h2 id="object_detected" style="font-size: 16px;">unidentified object</h2></div>
     <div class="card"><strong>Timer</strong><h2 id="timer">0.0s</h2></div>
   </div>
 
@@ -270,10 +268,12 @@ html_code = """
     const videoElement = document.getElementById('webcam');
     const canvasElement = document.getElementById('output_canvas');
     const canvasCtx = canvasElement.getContext('2d');
-    
+    const toggleBtn = document.getElementById('toggleBtn');
+    const reportBtn = document.getElementById('reportBtn');
+
     let objectModel = null;
-    let detectedObjects = [];
-    
+    let currentObject = "unidentified object";
+
     let isAnalyzing = false;
     let startTime = 0;
     let totalFramesRecorded = 0;
@@ -281,40 +281,53 @@ html_code = """
     let peakRebaScore = 0;
     let peakFrameBase64 = "";
     let peakAngles = {};
+    let sessionSummary = null;
 
     cocoSsd.load().then(model => {
       objectModel = model;
     });
 
-    function startAnalysis() {
-      isAnalyzing = true;
-      startTime = Date.now();
-      totalFramesRecorded = 0;
-      highRiskFrames = 0;
-      peakRebaScore = 0;
+    function toggleAnalysis() {
+      if (!isAnalyzing) {
+        // Start Analysis
+        isAnalyzing = true;
+        startTime = Date.now();
+        totalFramesRecorded = 0;
+        highRiskFrames = 0;
+        peakRebaScore = 0;
+        sessionSummary = null;
+        reportBtn.disabled = true;
+
+        toggleBtn.innerText = "⏹ Stop Session";
+        toggleBtn.classList.add("recording");
+      } else {
+        // Stop Session
+        isAnalyzing = false;
+        toggleBtn.innerText = "▶ Start Analysis";
+        toggleBtn.classList.remove("recording");
+
+        const duration = (Date.now() - startTime) / 1000.0;
+        const pctHighRisk = totalFramesRecorded > 0 ? (highRiskFrames / totalFramesRecorded) * 100.0 : 0.0;
+
+        sessionSummary = {
+          peak_reba_score: peakRebaScore || 1,
+          peak_angles: peakAngles,
+          peak_image_base64: peakFrameBase64,
+          auto_zone: "Elbow to Knuckle",
+          auto_reach: "Close",
+          total_duration: duration,
+          pct_high_risk: pctHighRisk,
+          object_detected: currentObject
+        };
+
+        reportBtn.disabled = false;
+      }
     }
 
-    function stopAnalysis() {
-      if (!isAnalyzing) return;
-      isAnalyzing = false;
+    function downloadReport() {
+      if (!sessionSummary) return;
 
-      const duration = (Date.now() - startTime) / 1000.0;
-      const pctHighRisk = totalFramesRecorded > 0 ? (highRiskFrames / totalFramesRecorded) * 100.0 : 0.0;
-      const mainObj = detectedObjects.length > 0 ? detectedObjects[0] : "Material / Box";
-
-      const payload = {
-        peak_reba_score: peakRebaScore,
-        peak_angles: peakAngles,
-        peak_image_base64: peakFrameBase64,
-        auto_zone: "Elbow to Knuckle",
-        auto_reach: "Close",
-        total_duration: duration,
-        pct_high_risk: pctHighRisk,
-        object_detected: mainObj
-      };
-
-      // Send payload via Streamlit custom event
-      const stringifiedData = JSON.stringify(payload);
+      const stringifiedData = JSON.stringify(sessionSummary);
       window.parent.postMessage({
         type: 'streamlit:setComponentValue',
         value: stringifiedData
@@ -338,10 +351,10 @@ html_code = """
       if (objectModel && videoElement.readyState === 4) {
         try {
           const predictions = await objectModel.detect(videoElement);
-          detectedObjects = [];
+          let detected = [];
           predictions.forEach(pred => {
-            if (pred.score > 0.4 && pred.class !== 'person') {
-              detectedObjects.push(pred.class);
+            if (pred.score > 0.35 && pred.class !== 'person') {
+              detected.push(pred.class);
               canvasCtx.strokeStyle = '#00FFFF';
               canvasCtx.lineWidth = 2;
               canvasCtx.strokeRect(pred.bbox[0], pred.bbox[1], pred.bbox[2], pred.bbox[3]);
@@ -350,7 +363,14 @@ html_code = """
               canvasCtx.fillText(`${pred.class} (${Math.round(pred.score*100)}%)`, pred.bbox[0], pred.bbox[1] > 10 ? pred.bbox[1] - 5 : 10);
             }
           });
-          document.getElementById('object_detected').innerText = detectedObjects.length > 0 ? detectedObjects[0] : "None";
+
+          // Rule: If object detected on camera but not in COCO taxonomy, label as "unidentified object"
+          if (detected.length > 0) {
+            currentObject = detected[0];
+          } else {
+            currentObject = "unidentified object";
+          }
+          document.getElementById('object_detected').innerText = currentObject;
         } catch(e){}
       }
 
@@ -374,7 +394,7 @@ html_code = """
         let aScore = angUArm <= 20 ? 1 : angUArm <= 45 ? 2 : 3;
         let laScore = (angLArm >= 60 && angLArm <= 100) ? 1 : 2;
         let lScore = Math.abs(180 - angLegs) <= 30 ? 1 : 2;
-        let wScore = Math.abs(180 - angWrist) <= 15 ? 1 : 2;
+        let wScore = Math.abs(180 - angLegs) <= 30 ? 1 : 2;
 
         let totalReba = tScore + nScore + aScore + laScore + lScore + wScore;
         document.getElementById('live_score').innerText = totalReba;
@@ -421,10 +441,8 @@ html_code = """
 </html>
 """
 
-# Render standard Streamlit HTML component directly
 res = components.html(html_code, height=680)
 
-# Store received data safely
 if res and isinstance(res, str):
     try:
         st.session_state.audit_data = json.loads(res)
@@ -433,15 +451,12 @@ if res and isinstance(res, str):
 
 st.markdown("---")
 
-# Render PDF Download Button when session data is available
-if isinstance(st.session_state.audit_data, dict) and st.session_state.audit_data:
-    st.success("✅ Recorded session synced! Your report is ready.")
+if "audit_data" in st.session_state and st.session_state.audit_data:
+    st.success("✅ Audit Session Synced!")
     pdf_bytes = generate_pdf_report(op_id, profile, actual_wt, st.session_state.audit_data)
     st.download_button(
-        label="📥 Download 3-Page REBA + NIOSH PDF Report",
+        label="📥 Download PDF Audit Report File",
         data=pdf_bytes,
         file_name=f"REBA_Audit_{op_id}.pdf",
         mime="application/pdf"
     )
-else:
-    st.info("💡 Click **'Start Analysis'**, perform the lifting movement, and click **'Stop & Sync Session'** to display the PDF download button.")
