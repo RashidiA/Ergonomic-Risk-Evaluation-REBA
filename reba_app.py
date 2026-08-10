@@ -112,7 +112,7 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
 
     pdf.ln(3)
 
-    # Embed Peak Image & Joint Angles Table
+    # Embed Peak REBA Image & Joint Angles Table on Page 1
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(0, 4.5, "Peak REBA Posture Snapshot & Step-by-Step Joint Angles", ln=True)
     curr_y = pdf.get_y() + 1
@@ -127,11 +127,12 @@ def generate_pdf_report(operator_id, profile, actual_weight, audit_data):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 tmp.write(data)
                 tmp_img_path = tmp.name
+                # Embed the Peak REBA Snapshot on Page 1
                 pdf.image(tmp_img_path, x=10, y=curr_y, w=85, h=60)
         except Exception:
             pass
 
-    # Angles Breakdown Table
+    # Angles Breakdown Table (Positioned next to the image)
     pdf.set_xy(100, curr_y)
     pdf.set_font("Arial", 'B', 8)
     pdf.cell(40, 4.5, "REBA Step / Joint", border=1, align='C')
@@ -406,7 +407,7 @@ html_code = """
         sessionSummary = {
           peak_reba_score: parseInt(document.getElementById('peak_score').innerText) || 1,
           peak_angles: peakAngles,
-          peak_image_base64: canvasElement.toDataURL('image/jpeg', 0.85),
+          peak_image_base64: peakFrameBase64 || canvasElement.toDataURL('image/jpeg', 0.85),
           auto_zone: "Shoulder to Elbow",
           auto_reach: "Close",
           total_duration: 12.4,
