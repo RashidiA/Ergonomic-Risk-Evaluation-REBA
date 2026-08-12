@@ -27,13 +27,14 @@ html_code = f"""
     .container {{ position: relative; width: 100%; max-width: 640px; margin: auto; }}
     video {{ display: none; }}
     canvas {{ width: 100%; height: auto; border-radius: 8px; background: #000; }}
-    .controls {{ display: flex; gap: 12px; margin-top: 10px; justify-content: center; }}
-    button {{ padding: 12px 24px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white; font-size: 15px; transition: all 0.2s; }}
+    .controls {{ display: flex; gap: 12px; margin-top: 10px; justify-content: center; flex-wrap: wrap; align-items: center; }}
+    button, select {{ padding: 12px 18px; font-weight: bold; border-radius: 6px; border: none; cursor: pointer; color: white; font-size: 15px; transition: all 0.2s; }}
     .btn-toggle {{ background-color: #28a745; }}
     .btn-toggle.recording {{ background-color: #dc3545; }}
     .btn-report {{ background-color: #0d6efd; }}
-    .metrics {{ margin-top: 12px; display: flex; gap: 10px; }}
-    .card {{ background: #f0f2f6; padding: 10px; border-radius: 6px; flex: 1; text-align: center; }}
+    .select-cam {{ background-color: #343a40; color: white; border: 1px solid #495057; outline: none; }}
+    .metrics {{ margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; }}
+    .card {{ background: #f0f2f6; padding: 10px; border-radius: 6px; flex: 1; min-width: 100px; text-align: center; }}
   </style>
 </head>
 <body>
@@ -43,6 +44,10 @@ html_code = f"""
   </div>
 
   <div class="controls">
+    <select id="cameraSelect" class="select-cam" onchange="switchCamera(this.value)">
+      <option value="user">📷 Front Camera</option>
+      <option value="environment">📸 Rear Camera</option>
+    </select>
     <button id="toggleBtn" class="btn-toggle" onclick="toggleAnalysis()">▶ Start Analysis</button>
     <button id="reportBtn" class="btn-report" onclick="downloadPdfReport()">📄 Download 3-Page PDF Report</button>
   </div>
@@ -70,6 +75,7 @@ html_code = f"""
     let isAnalyzing = false;
     let startTime = 0;
     let sessionDuration = 0;
+    let activeCameraInstance = null;
     
     let bodyPartFrames = {{
       trunk: {{ s1_2: 0, s3_4: 0, s5_plus: 0 }},
@@ -159,7 +165,6 @@ html_code = f"""
       else bodyPartFrames[partKey].s5_plus++;
     }}
 
-    // Helper to check if a point (hand) is inside/near an object bounding box
     function isHandNearBox(handX, handY, bbox, threshold = 60) {{
       let [x, y, width, height] = bbox;
       return (
@@ -199,12 +204,10 @@ html_code = f"""
               if (pred.score > 0.25 && pred.class !== 'person') {{
                 let bbox = pred.bbox;
                 
-                // Check if left or right wrist is near this bounding box
                 let nearLeft = lwX > 0 && isHandNearBox(lwX, lwY, bbox);
                 let nearRight = rwX > 0 && isHandNearBox(rwX, rwY, bbox);
 
                 if (nearLeft || nearRight) {{
-                  // Recognized class in COCO list near hand
                   if (pred.class && pred.class.trim() !== "") {{
                     detectedHandObjects.push(pred.class);
                   }} else {{
@@ -224,10 +227,8 @@ html_code = f"""
             if (detectedHandObjects.length > 0) {{
               handOnObjectDetected = detectedHandObjects[0];
             }} else {{
-              // If hands are raised/active but no COCO item match, check if hands are close together carrying something unknown
               let handDist = Math.hypot(lwX - rwX, lwY - rwY);
               if (handDist < 180 && lwY > 0 && rwY > 0) {{
-                // Check if hands are holding something unclassified
                 handOnObjectDetected = "Unidentified Object";
               }} else {{
                 handOnObjectDetected = "No object detected";
@@ -318,11 +319,30 @@ html_code = f"""
     pose.setOptions({{ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5 }});
     pose.onResults(onResults);
 
-    const camera = new Camera(videoElement, {{
-      onFrame: async () => {{ await pose.send({{ image: videoElement }}); }},
-      width: 640, height: 480
-    }});
-    camera.start();
+    // Camera Switcher Functionality
+    async function switchCamera(facingMode) {{
+      if (activeCameraInstance) {{
+        await activeCameraInstance.stop();
+      }}
+
+      // Stop existing stream tracks manually if present
+      if (videoElement.srcObject) {{
+        let tracks = videoElement.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
+      }}
+
+      activeCameraInstance = new Camera(videoElement, {{
+        onFrame: async () => {{ await pose.send({{ image: videoElement }}); }},
+        width: 640,
+        height: 480,
+        facingMode: facingMode
+      }});
+
+      activeCameraInstance.start();
+    }}
+
+    // Initial camera startup with front camera ('user')
+    switchCamera('user');
 
     function getPct(partKey, tierKey) {{
       if (totalFramesRecorded === 0) {{
