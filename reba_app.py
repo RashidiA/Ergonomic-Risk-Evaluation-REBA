@@ -68,6 +68,97 @@ html_code = f"""
 
     const GITHUB_ASSET_URL = "https://raw.githubusercontent.com/RashidiA/Ergonomic-Risk-Evaluation-REBA/main/assets/recommended_weight.png";
 
+    // --- OFFICIAL REBA LOOKUP TABLES ---
+    // Table A: [Trunk 1..5][Neck 1..3][Legs 1..4]
+    const TABLE_A = [
+      // Trunk 1
+      [[1, 2, 3, 4], [2, 3, 4, 5], [2, 4, 5, 6]],
+      // Trunk 2
+      [[2, 3, 4, 5], [3, 4, 5, 6], [4, 5, 6, 7]],
+      // Trunk 3
+      [[2, 4, 5, 6], [4, 5, 6, 7], [5, 6, 7, 8]],
+      // Trunk 4
+      [[3, 5, 6, 7], [5, 6, 7, 8], [6, 7, 8, 9]],
+      // Trunk 5
+      [[4, 6, 7, 8], [6, 7, 8, 9], [7, 8, 9, 9]]
+    ];
+
+    // Table B: [UpperArm 1..6][LowerArm 1..2][Wrist 1..3]
+    const TABLE_B = [
+      // Upper Arm 1
+      [[1, 2, 2], [1, 2, 3]],
+      // Upper Arm 2
+      [[1, 2, 3], [2, 3, 4]],
+      // Upper Arm 3
+      [[3, 4, 5], [4, 5, 5]],
+      // Upper Arm 4
+      [[4, 5, 5], [5, 6, 7]],
+      // Upper Arm 5
+      [[6, 7, 8], [7, 8, 8]],
+      // Upper Arm 6
+      [[7, 8, 8], [8, 9, 9]]
+    ];
+
+    // Table C: [Score A 1..12][Score B 1..12]
+    const TABLE_C = [
+      [1, 1, 1, 2, 3, 3, 4, 5, 6, 7, 7, 7],
+      [1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 7, 8],
+      [2, 3, 3, 3, 4, 5, 6, 7, 7, 8, 8, 8],
+      [3, 4, 4, 4, 5, 6, 7, 8, 8, 9, 9, 9],
+      [4, 4, 5, 6, 7, 7, 8, 9, 9, 10, 10, 11],
+      [6, 6, 7, 8, 8, 9, 9, 10, 10, 11, 11, 11],
+      [7, 7, 8, 8, 9, 9, 10, 11, 11, 11, 12, 12],
+      [8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 12, 12],
+      [9, 9, 10, 10, 11, 11, 12, 12, 12, 12, 12, 12],
+      [10, 10, 11, 11, 11, 12, 12, 12, 12, 12, 12, 12],
+      [11, 11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 12],
+      [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12]
+    ];
+
+    function calculateOfficialREBA(trunk, neck, legs, upperArm, lowerArm, wrist, loadKg, objectName) {{
+      // Clamp inputs to Table ranges
+      let t = Math.min(Math.max(trunk, 1), 5) - 1;
+      let n = Math.min(Math.max(neck, 1), 3) - 1;
+      let l = Math.min(Math.max(legs, 1), 4) - 1;
+
+      let u = Math.min(Math.max(upperArm, 1), 6) - 1;
+      let la = Math.min(Math.max(lowerArm, 1), 2) - 1;
+      let w = Math.min(Math.max(wrist, 1), 3) - 1;
+
+      // 1. Table A Lookup (Posture Score A)
+      let postureScoreA = TABLE_A[t][n][l];
+
+      // 2. Force / Load Score
+      let loadScore = 0;
+      if (loadKg >= 5.0 && loadKg <= 10.0) loadScore = 1;
+      else if (loadKg > 10.0) loadScore = 2;
+
+      let scoreA = postureScoreA + loadScore;
+
+      // 3. Table B Lookup (Posture Score B)
+      let postureScoreB = TABLE_B[u][la][w];
+
+      // 4. Coupling Score
+      let couplingScore = 0;
+      if (objectName !== "No object detected") {{
+        couplingScore = 1; // Fair coupling for handled objects
+      }}
+
+      let scoreB = postureScoreB + couplingScore;
+
+      // 5. Table C Lookup
+      let idxA = Math.min(Math.max(scoreA, 1), 12) - 1;
+      let idxB = Math.min(Math.max(scoreB, 1), 12) - 1;
+      let scoreC = TABLE_C[idxA][idxB];
+
+      // 6. Activity Score (+1 for held dynamic postures)
+      let activityScore = 1;
+
+      // Final REBA Score
+      let finalREBA = scoreC + activityScore;
+      return Math.min(Math.max(finalREBA, 1), 15);
+    }}
+
     let objectModel = null;
     let currentObject = "No object detected";
     let persistObject = "No object detected";
@@ -269,7 +360,8 @@ html_code = f"""
         let lScore = Math.abs(180 - angLegs) <= 30 ? 1 : 2;
         let wScore = Math.abs(180 - angWrist) <= 15 ? 1 : 2;
 
-        let totalReba = tScore + nScore + aScore + laScore + lScore + wScore;
+        // CALCULATE OFFICIAL REBA SCORE USING LOOKUP TABLES
+        let totalReba = calculateOfficialREBA(tScore, nScore, lScore, aScore, laScore, wScore, actualWeight, currentObject);
         document.getElementById('live_score').innerText = totalReba;
 
         if (isAnalyzing) {{
@@ -319,13 +411,11 @@ html_code = f"""
     pose.setOptions({{ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5 }});
     pose.onResults(onResults);
 
-    // Camera Switcher Functionality
     async function switchCamera(facingMode) {{
       if (activeCameraInstance) {{
         await activeCameraInstance.stop();
       }}
 
-      // Stop existing stream tracks manually if present
       if (videoElement.srcObject) {{
         let tracks = videoElement.srcObject.getTracks();
         tracks.forEach(track => track.stop());
@@ -341,7 +431,6 @@ html_code = f"""
       activeCameraInstance.start();
     }}
 
-    // Initial camera startup with front camera ('user')
     switchCamera('user');
 
     function getPct(partKey, tierKey) {{
