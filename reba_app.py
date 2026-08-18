@@ -128,6 +128,30 @@ html_code = f"""
       return Math.min(Math.max(finalREBA, 1), 15);
     }}
 
+    // DYNAMIC MMH RECOMMENDED WEIGHT MATRIX LOOKUP FIX
+    function getDynamicMmhLimit(profile, zone, reach) {{
+      const limits = {{
+        "Male": {{
+          "Above Shoulder":    {{ "Close Reach": 10.0, "Far Reach": 5.0 }},
+          "Shoulder to Elbow": {{ "Close Reach": 20.0, "Far Reach": 10.0 }},
+          "Elbow to Knuckle":  {{ "Close Reach": 25.0, "Far Reach": 15.0 }},
+          "Knuckle to Mid-Leg":{{ "Close Reach": 20.0, "Far Reach": 10.0 }},
+          "Below Mid-Leg":     {{ "Close Reach": 10.0, "Far Reach": 5.0 }}
+        }},
+        "Female": {{
+          "Above Shoulder":    {{ "Close Reach": 7.0,  "Far Reach": 3.0 }},
+          "Shoulder to Elbow": {{ "Close Reach": 13.0, "Far Reach": 7.0 }},
+          "Elbow to Knuckle":  {{ "Close Reach": 16.0, "Far Reach": 10.0 }},
+          "Knuckle to Mid-Leg":{{ "Close Reach": 13.0, "Far Reach": 7.0 }},
+          "Below Mid-Leg":     {{ "Close Reach": 7.0,  "Far Reach": 3.0 }}
+        }}
+      }};
+      
+      let userProfile = limits[profile] || limits["Male"];
+      let zoneLimits = userProfile[zone] || userProfile["Shoulder to Elbow"];
+      return zoneLimits[reach] !== undefined ? zoneLimits[reach] : zoneLimits["Close Reach"];
+    }}
+
     let objectModel = null;
     let currentObject = "No object detected";
     let persistObject = "No object detected";
@@ -136,7 +160,7 @@ html_code = f"""
     let startTime = 0;
     let sessionDuration = 0;
     let activeCameraInstance = null;
-    let initialWristV = null; // For Distance Multiplier calculation
+    let initialWristV = null;
     
     let bodyPartFrames = {{
       trunk: {{ s1_2: 0, s3_4: 0, s5_plus: 0 }},
@@ -560,7 +584,8 @@ html_code = f"""
       doc.text(`Hand Detected Object: ${{persistObject}}`, 12, yPos); yPos += 5;
       doc.text(`Actual Weight Lifted: ${{actualWeight.toFixed(1)}} kg`, 12, yPos); yPos += 5;
       
-      let maxLimit = evalProfile === "Male" ? 20.0 : 13.0;
+      // DYNAMIC MATRIX LOOKUP CORRECTION
+      let maxLimit = getDynamicMmhLimit(evalProfile, peakMmhZone, peakMmhReach);
       doc.text(`Max Recommended Limit: ${{maxLimit.toFixed(1)}} kg`, 12, yPos); yPos += 6;
 
       doc.setFont("Helvetica", "bold");
