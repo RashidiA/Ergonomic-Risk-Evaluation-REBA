@@ -2,7 +2,7 @@
 
 An AI-powered computer vision application built with **Streamlit**, **MediaPipe**, **YOLOv8**, and **FPDF**. The application performs live ergonomic posture risk assessment using the **REBA (Rapid Entire Body Assessment)** framework and automatically triggers a **NIOSH Lifting Equation Assessment** whenever a lifted object is detected on the operator's hand.  
   
-Access link : https://ergonomic-risk-evaluation-reba-xugjcmzcuciyhtkz3adgbk.streamlit.app/
+App access link : https://ergonomic-risk-evaluation-reba-xugjcmzcuciyhtkz3adgbk.streamlit.app/
 
 ---
 
